@@ -25,6 +25,10 @@ be freely inspected).
 
 Anyway, I hope this library is useful to others in addition to myself and our lab, and I expect it to be developed and improved going forward.
 
+## Intentionally unimplemented features
+
+This library does not currently support the *weighted* dictionary functionality of SSHash. This was not needed for our purpose, and I wanted to remove non-essential features from the initial version.
+
 ## Building
 
 Requires **Rust 1.85+** (edition 2024).
@@ -145,6 +149,4 @@ MIT
 ## References
 
 Giulio Ermanno Pibiri. "[Sparse and Skew Hashing of K-Mers](https://doi.org/10.1093/bioinformatics/btac245)." *Bioinformatics*, 2022.
-Giulio Ermanno Pibiri and Rob Patro. * [Optimizing sparse and skew hashing: faster k-mer dictionaries](https://www.biorxiv.org/content/10.64898/2026.01.21.700884v1) [1]
-
-See [github.com/jermp/sshash](https://github.com/jermp/sshash) for the original C++ implementation.
+Giulio Ermanno Pibiri and Rob Patro. "[Optimizing sparse and skew hashing: faster k-mer dictionaries](https://www.biorxiv.org/content/10.64898/2026.01.21.700884v1)." BioRxiv, 2026.
