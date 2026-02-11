@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sshash-lib",
+    "crates/sshash-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["SSHash Contributors"]
+license = "MIT"
+repository = "https://github.com/jermp/sshash"
+
+[workspace.dependencies]
+# Core library
+sshash-lib = { path = "crates/sshash-lib" }
+
+# Succinct data structures
+sux = { version = "0.11", features = ["epserde"] }
+
+# Minimal perfect hashing (dev branch for PHast serialization support)
+ph = { git = "https://github.com/beling/bsuccinct-rs", default-features = false }
+
+# FASTA/FASTQ parsing
+needletail = "0.6"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Parallelism
+rayon = "1.11"
+
+# Memory mapping and temp files (for external sorting)
+memmap2 = "0.9"
+tempfile = "3.15"
+
+# Utilities
+seq-macro = "0.3"

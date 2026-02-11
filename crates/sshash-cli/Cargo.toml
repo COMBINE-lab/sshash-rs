@@ -1,0 +1,33 @@
+[package]
+name = "sshash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sparse and Skew Hashing of k-mers - Command line tool"
+
+[[bin]]
+name = "sshash"
+path = "src/main.rs"
+
+[dependencies]
+# Core library
+sshash-lib = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# FASTA/FASTQ parsing
+needletail = { workspace = true }
+
+# Utilities
+seq-macro = { workspace = true }

@@ -1,0 +1,59 @@
+[package]
+name = "sshash-lib"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sparse and Skew Hashing of k-mers - Core library"
+
+[dependencies]
+# Succinct data structures
+sux = { workspace = true }
+
+# Compact sequences — Elias-Fano with stateful Cursor for cheap adjacent access
+cseq = "0.1"
+
+# Minimal perfect hashing  
+ph = { workspace = true }
+
+# FASTA/FASTQ parsing
+needletail = { workspace = true }
+
+# Serialization
+epserde = "0.11"  # Must match sux's epserde version (sux 0.11 uses epserde 0.11)
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Parallelism
+rayon = { workspace = true }
+
+# Utilities for const generic generation
+seq-macro = { workspace = true }
+
+# Fast hashing with deterministic seeding
+ahash = "0.8"
+
+# Value-based slice traits (used by sux 0.11 BitFieldVec)
+value-traits = "0.2"
+
+# Memory usage measurement (must match sux's version)
+mem_dbg = "0.3.0"
+
+# Memory usage measurement for cseq types
+dyn_size_of = "0.4"
+
+# Memory mapping (for external sorting)
+memmap2 = { workspace = true }
+
+[dev-dependencies]
+# Testing utilities
+rand = "0.9"
+proptest = "1.6"
+tempfile = "3.20"
