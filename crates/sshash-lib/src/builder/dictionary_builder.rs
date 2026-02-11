@@ -120,13 +120,10 @@ impl DictionaryBuilder {
     
     /// Encode sequences into spectrum-preserving string set
     fn encode_sequences(&self, sequences: Vec<String>) -> Result<(SpectrumPreservingStringSet, usize), String> {
-        // Dispatch based on k
         let num_sequences = sequences.len();
-        let spss = match self.config.k {
-            3..=31 => self.encode_sequences_k::<31>(sequences)?,
-            32..=63 => self.encode_sequences_k::<63>(sequences)?,
-            _ => return Err(format!("Unsupported k value: {}", self.config.k)),
-        };
+        let spss = crate::dispatch_on_k!(self.config.k, K => {
+            self.encode_sequences_k::<K>(sequences)?
+        });
         
         Ok((spss, num_sequences))
     }
@@ -163,19 +160,14 @@ impl DictionaryBuilder {
                 "Using external sorting: estimated {} k-mers exceeds RAM limit of {} GiB",
                 total_kmers, self.config.ram_limit_gib
             );
-            match self.config.k {
-                3..=31 => compute_minimizer_tuples_external::<31>(spss, &self.config)
-                    .map_err(|e| e.to_string()),
-                32..=63 => compute_minimizer_tuples_external::<63>(spss, &self.config)
-                    .map_err(|e| e.to_string()),
-                _ => Err(format!("Unsupported k value: {}", self.config.k)),
-            }
+            crate::dispatch_on_k!(self.config.k, K => {
+                compute_minimizer_tuples_external::<K>(spss, &self.config)
+                    .map_err(|e| e.to_string())
+            })
         } else {
-            match self.config.k {
-                3..=31 => Ok(compute_minimizer_tuples::<31>(spss, &self.config)),
-                32..=63 => Ok(compute_minimizer_tuples::<63>(spss, &self.config)),
-                _ => Err(format!("Unsupported k value: {}", self.config.k)),
-            }
+            crate::dispatch_on_k!(self.config.k, K => {
+                Ok(compute_minimizer_tuples::<K>(spss, &self.config))
+            })
         }
     }
     
@@ -233,11 +225,9 @@ impl DictionaryBuilder {
         
 
         // Dispatch to appropriate build function based on k
-        let index = match self.config.k {
-            3..=31 => SparseAndSkewIndex::build::<31>(buckets, num_bits_per_offset, spss, self.config.canonical),
-            32..=63 => SparseAndSkewIndex::build::<63>(buckets, num_bits_per_offset, spss, self.config.canonical),
-            _ => return Err(format!("Unsupported k value: {}", self.config.k)),
-        };
+        let index = crate::dispatch_on_k!(self.config.k, K => {
+            SparseAndSkewIndex::build::<K>(buckets, num_bits_per_offset, spss, self.config.canonical)
+        });
         
         Ok(index)
     }

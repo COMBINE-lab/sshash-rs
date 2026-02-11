@@ -62,10 +62,6 @@ enum Commands {
         #[arg(short, long)]
         query: String,
 
-        /// K-mer length (must match dictionary)
-        #[arg(short, long)]
-        k: usize,
-
         /// Use streaming query (FASTA/FASTQ only)
         #[arg(long, default_value = "false")]
         streaming: bool,
@@ -80,10 +76,6 @@ enum Commands {
         /// Input file used to build the dictionary
         #[arg(short = 'f', long)]
         input: String,
-
-        /// K-mer length
-        #[arg(short, long)]
-        k: usize,
 
         /// Use streaming query for validation (FASTA/FASTQ only)
         #[arg(long, default_value = "false")]
@@ -113,11 +105,11 @@ fn main() -> anyhow::Result<()> {
         Commands::Build { input, k, m, output, canonical, threads, ram_limit, verbose } => {
             build_command(input, k, m, output, canonical, threads, ram_limit, verbose)?;
         }
-        Commands::Query { index, query, k, streaming } => {
-            query_command(index, query, k, streaming)?;
+        Commands::Query { index, query, streaming } => {
+            query_command(index, query, streaming)?;
         }
-        Commands::Check { index, input, k, streaming } => {
-            check_command(index, input, k, streaming)?;
+        Commands::Check { index, input, streaming } => {
+            check_command(index, input, streaming)?;
         }
         Commands::Bench { index } => {
             bench_command(index)?;
@@ -194,11 +186,9 @@ fn bench_command(index: String) -> anyhow::Result<()> {
     
     dict.print_space_breakdown();
 
-    match k {
-        3..=31 => bench_with_k::<31>(&dict),
-        32..=63 => bench_with_k::<63>(&dict),
-        _ => Err(anyhow::anyhow!("Unsupported k value: {}", k)),
-    }
+    sshash_lib::dispatch_on_k!(k, K => {
+        bench_with_k::<K>(&dict)
+    })
 }
 
 fn bench_with_k<const K: usize>(dict: &Dictionary) -> anyhow::Result<()>
@@ -321,27 +311,27 @@ where
 }
 
 /// Query k-mers from a dictionary
-fn query_command(index: String, query: String, k: usize, streaming: bool) -> anyhow::Result<()> {
+fn query_command(index: String, query: String, streaming: bool) -> anyhow::Result<()> {
     let index = normalize_index_path(&index);
     info!("Loading dictionary from {}...", index);
     
-    // Load dictionary (dispatch based on k)
-    match k {
-        3..=31 => query_with_k::<31>(&index, &query, k, streaming),
-        32..=63 => query_with_k::<63>(&index, &query, k, streaming),
-        _ => Err(anyhow::anyhow!("Unsupported k value: {}", k)),
-    }
+    let dict = Dictionary::load(&index)?;
+    let k = dict.k();
+    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+
+    sshash_lib::dispatch_on_k!(k, K => {
+        query_with_k::<K>(&dict, &query, streaming)
+    })
 }
 
-fn query_with_k<const K: usize>(index: &str, query: &str, k: usize, streaming: bool) -> anyhow::Result<()>
+fn query_with_k<const K: usize>(dict: &Dictionary, query: &str, streaming: bool) -> anyhow::Result<()>
 where
     Kmer<K>: KmerBits,
 {
-    let dict = Dictionary::load(index)?;
-    info!("Dictionary loaded (k={}, m={}, canonical={})", dict.k(), dict.m(), dict.canonical());
+    let k = dict.k();
 
     if streaming {
-        return query_with_k_streaming::<K>(&dict, query, k);
+        return query_with_k_streaming::<K>(dict, query, k);
     }
     
     // Read query k-mers
@@ -375,7 +365,6 @@ where
                 }
             } else {
                 not_found += 1;
-                // Print NOT FOUND k-mers for debugging
                 debug!("  {} -> NOT FOUND (index {})", kmer_str, i);
             }
         }
@@ -465,30 +454,29 @@ where
 }
 
 /// Check dictionary correctness by re-querying all k-mers from input
-fn check_command(index: String, input: String, k: usize, streaming: bool) -> anyhow::Result<()> {
+fn check_command(index: String, input: String, streaming: bool) -> anyhow::Result<()> {
     let index = normalize_index_path(&index);
     info!("Checking dictionary correctness...");
     info!("  Index: {}", index);
     info!("  Input: {}", input);
-    info!("  k: {}", k);
+
+    let dict = Dictionary::load(&index)?;
+    let k = dict.k();
+    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
     
-    match k {
-        3..=31 => check_with_k::<31>(&index, &input, k, streaming),
-        32..=63 => check_with_k::<63>(&index, &input, k, streaming),
-        _ => Err(anyhow::anyhow!("Unsupported k value: {}", k)),
-    }
+    sshash_lib::dispatch_on_k!(k, K => {
+        check_with_k::<K>(&dict, &input, streaming)
+    })
 }
 
-fn check_with_k<const K: usize>(index: &str, input: &str, k: usize, streaming: bool) -> anyhow::Result<()>
+fn check_with_k<const K: usize>(dict: &Dictionary, input: &str, streaming: bool) -> anyhow::Result<()>
 where
     Kmer<K>: KmerBits,
 {
-    // Load dictionary
-    let dict = Dictionary::load(index)?;
-    info!("Dictionary loaded");
+    let k = dict.k();
 
     if streaming {
-        return check_with_k_streaming::<K>(&dict, input, k);
+        return check_with_k_streaming::<K>(dict, input, k);
     }
     
     // Extract all k-mers from input
