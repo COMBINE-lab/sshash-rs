@@ -27,7 +27,7 @@ pub use minimizer::{MinimizerInfo, MinimizerIterator};
 pub use minimizers_control_map::{MinimizersControlMap, MinimizersControlMapBuilder, BucketType};
 pub use streaming_query::{LookupResult, StreamingQuery};
 pub use dictionary::Dictionary;
-pub use builder::{BuildConfiguration, DictionaryBuilder};
+pub use builder::{BuildConfiguration, CfSegData, DictionaryBuilder, parse_cf_seg};
 
 /// Dispatch to the correct const generic `K` based on a runtime `k` value.
 ///

@@ -9,6 +9,7 @@
 //! 6. Build sparse and skew index
 //! 7. Finalize dictionary structure
 
+pub mod cf_seg;
 pub mod config;
 pub mod parse;
 pub mod encode;
@@ -17,6 +18,7 @@ pub mod buckets;
 pub mod dictionary_builder;
 pub mod external_sort;
 
+pub use cf_seg::{CfSegData, parse_cf_seg};
 pub use config::BuildConfiguration;
 pub use minimizer_tuples::MinimizerTuple;
 pub use dictionary_builder::DictionaryBuilder;
