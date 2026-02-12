@@ -29,10 +29,6 @@ Anyway, I hope this library is useful to others in addition to myself and our la
 
 This library does not currently support the *weighted* dictionary functionality of SSHash. This was not needed for our purpose, and I wanted to remove non-essential features from the initial version.
 
-## Eventually supported but currently incomplete features
-
-Right now, *almost* all of the index works for all odd values of k from 3 to 63. However, there is a code path in the MPHF for the heavy buckets that doesn't currently support k > 31. Hence, _as of right now_, the index can only be built for k <= 31.
-
 ## Building
 
 Requires **Rust 1.85+** (edition 2024).

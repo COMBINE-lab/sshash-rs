@@ -9,6 +9,7 @@ use crate::builder::buckets::{Bucket, BucketType, MIN_BUCKET_SIZE};
 use crate::constants::{MIN_L, MAX_L, INVALID_UINT64};
 use crate::kmer::{Kmer, KmerBits};
 use crate::mphf_config::{Mphf, build_mphf_from_slice};
+use std::hash::Hash;
 use sux::bits::bit_field_vec::BitFieldVec;
 use value_traits::slices::{SliceByValue, SliceByValueMut};
 
@@ -120,7 +121,6 @@ impl SparseAndSkewIndex {
         let mut bucket_id_by_size = vec![0usize; MIN_BUCKET_SIZE + 1];
         
         // Second pass: build control codewords and populate mid_load_buckets
-        
         for (minimizer_idx, bucket) in buckets.iter().enumerate() {
             let size = bucket.size();
             
@@ -233,12 +233,12 @@ impl SparseAndSkewIndex {
     /// Look up a k-mer using its control codeword
     ///
     /// # Arguments
-    /// * `kmer_value` - The k-mer as a u64
+    /// * `kmer_value` - The k-mer value
     /// * `control_code` - The control codeword from the minimizers control map
     ///
     /// # Returns
     /// The position in the sequence, or INVALID_UINT64 if not found
-    pub fn lookup(&self, kmer_value: u64, control_code: u64) -> u64 {
+    pub fn lookup<T: std::hash::Hash>(&self, kmer_value: &T, control_code: u64) -> u64 {
         // Decode the control codeword based on LSB
         // Singleton: last bit = 0 (LSB = 0b0x, where x can be 0 or 1)
         // Light: last 2 bits = 0b01
@@ -568,8 +568,10 @@ impl SkewIndex {
         let mut upper = 2 * lower;
         let mut num_bits_per_pos = MIN_L + 1;
         
-        // Temporary storage for current partition
-        let mut partition_kmers: Vec<u64> = Vec::new();
+        // Temporary storage for current partition.
+        // Uses KmerBits::Storage (u64 for K ≤ 31, u128 for K > 31) so the
+        // MPHF is built over the native k-mer representation.
+        let mut partition_kmers: Vec<<Kmer<K> as KmerBits>::Storage> = Vec::new();
         let mut partition_positions: Vec<usize> = Vec::new();
         
         for (_orig_idx, bucket) in heavy_buckets {
@@ -632,11 +634,11 @@ impl SkewIndex {
                 
                 for kmer_offset in 0..tuple.num_kmers_in_super_kmer {
                     let kmer: Kmer<K> = spss.decode_kmer_at(starting_kmer_pos + kmer_offset as usize);
-                    let mut kmer_value = kmer.as_u64();
+                    let mut kmer_value = kmer.bits();
                     
                     if canonical {
                         let rc = kmer.reverse_complement();
-                        let rc_value = rc.as_u64();
+                        let rc_value = rc.bits();
                         if rc_value < kmer_value {
                             kmer_value = rc_value;
                         }
@@ -676,13 +678,16 @@ impl SkewIndex {
     
     /// Lookup a k-mer in the skew index
     ///
+    /// Generic over the key type: `u64` for K ≤ 31, `u128` for K > 31.
+    /// The key type must match the one used during [`build`].
+    ///
     /// # Arguments
-    /// * `kmer` - The k-mer to lookup
+    /// * `kmer_value` - The k-mer value (same type used to build the MPHF)
     /// * `code` - Control codeword from sparse index
     ///
     /// # Returns
     /// The position in the sequence
-    pub fn lookup(&self, kmer_value: u64, code: u64) -> u64 {
+    pub fn lookup<T: Hash>(&self, kmer_value: &T, code: u64) -> u64 {
         let code = code >> 2;
         let partition_id = (code & 7) as usize;
         let begin = code >> 3;
@@ -695,7 +700,7 @@ impl SkewIndex {
             Some(m) => m,
             None => return INVALID_UINT64,
         };
-        let pos = mphf.get(&kmer_value);
+        let pos = mphf.get(kmer_value);
         
         if pos >= self.positions[partition_id].len() {
             return INVALID_UINT64;
@@ -762,8 +767,10 @@ impl SkewIndex {
     }
 }
 
-/// Build an MPHF for a partition's k-mers
-fn build_partition_mphf(kmers: &[u64]) -> Option<Mphf> {
+/// Build an MPHF for a partition's k-mers.
+///
+/// Generic over the key type (`u64` for K ≤ 31, `u128` for K > 31).
+fn build_partition_mphf<T: Hash + Clone>(kmers: &[T]) -> Option<Mphf> {
     if kmers.is_empty() {
         return None;
     }

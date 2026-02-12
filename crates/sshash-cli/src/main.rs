@@ -391,10 +391,12 @@ fn query_with_k_streaming<const K: usize>(
 where
     Kmer<K>: KmerBits,
 {
-    if !(query.ends_with(".fa")
-        || query.ends_with(".fasta")
-        || query.ends_with(".fq")
-        || query.ends_with(".fastq"))
+    // Strip .gz suffix for extension check
+    let name = query.strip_suffix(".gz").unwrap_or(query);
+    if !(name.ends_with(".fa")
+        || name.ends_with(".fasta")
+        || name.ends_with(".fq")
+        || name.ends_with(".fastq"))
     {
         return Err(anyhow::anyhow!("Streaming query requires FASTA/FASTQ input"));
     }

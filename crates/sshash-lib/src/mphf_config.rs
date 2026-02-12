@@ -9,6 +9,7 @@
 use ph::Seedable;
 use ph::phast;
 use ph::seeds::Bits8;
+use std::hash::Hash;
 use std::io;
 
 /// The seeded hasher used inside our MPHF functions.
@@ -41,12 +42,18 @@ pub fn mphf_params() -> phast::Params<Bits8> {
 }
 
 /// Build an MPHF from a slice of keys (single-threaded).
-pub fn build_mphf_from_slice(keys: &[u64]) -> Mphf {
+///
+/// Generic over the key type — works with `u64` (minimizers, k ≤ 31 k-mers)
+/// or `u128` (k > 31 k-mers). The MPHF itself is key-type-erased after
+/// construction; only the build and query calls need to agree on the type.
+pub fn build_mphf_from_slice<T: Hash + Clone>(keys: &[T]) -> Mphf {
     Mphf::with_slice_p_hash_sc(keys, &mphf_params(), mphf_hasher(), phast::SeedOnly)
 }
 
 /// Build an MPHF from an owned Vec of keys (single-threaded, avoids cloning).
-pub fn build_mphf_from_vec(keys: Vec<u64>) -> Mphf {
+///
+/// Generic over the key type — see [`build_mphf_from_slice`] for details.
+pub fn build_mphf_from_vec<T: Hash>(keys: Vec<T>) -> Mphf {
     Mphf::with_vec_p_hash_sc(keys, &mphf_params(), mphf_hasher(), phast::SeedOnly)
 }
 

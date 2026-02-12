@@ -392,8 +392,8 @@ where
             // Read expected k-mer from string data at the next position
             let expected_kmer: Kmer<K> = dict.spss().decode_kmer_at(next_abs_pos);
 
-            if expected_kmer.as_u64() == kmer.as_u64()
-                || expected_kmer.as_u64() == kmer_rc.as_u64()
+            if expected_kmer.bits() == kmer.bits()
+                || expected_kmer.bits() == kmer_rc.bits()
             {
                 // Successfully extended!
                 self.num_extensions += 1;

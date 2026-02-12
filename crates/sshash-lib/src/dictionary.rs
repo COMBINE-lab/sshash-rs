@@ -140,7 +140,7 @@ impl Dictionary {
         } else if (control_code & 0b11) == 0b01 {
             self.lookup_in_light_bucket::<K>(kmer, minimizer_info, control_code)
         } else if (control_code & 0b11) == 0b11 {
-            let minimizer_pos = self.index.skew_index.lookup(kmer.as_u64(), control_code);
+            let minimizer_pos = self.index.skew_index.lookup(&kmer.bits(), control_code);
             if minimizer_pos == INVALID_UINT64 { return None; }
             self.lookup_from_minimizer_pos::<K>(kmer, minimizer_pos, minimizer_info)
         } else {
@@ -311,7 +311,7 @@ impl Dictionary {
             let pos = self.lookup_in_light_bucket::<K>(kmer, minimizer_info, control_code);
             (pos, 1)
         } else if (control_code & 0b11) == 0b11 {
-            let minimizer_pos = self.index.skew_index.lookup(kmer.as_u64(), control_code);
+            let minimizer_pos = self.index.skew_index.lookup(&kmer.bits(), control_code);
             if minimizer_pos == INVALID_UINT64 {
                 return (INVALID_UINT64, 1);
             }
@@ -386,8 +386,8 @@ impl Dictionary {
             // Heavy bucket (0b11)
             // Must use canonical kmer (min of fwd and rc) since the skew index
             // MPHF was built with canonical kmers (matching C++ behavior).
-            let kmer_canon_value = std::cmp::min(kmer.as_u64(), kmer_rc.as_u64());
-            let minimizer_pos = self.index.skew_index.lookup(kmer_canon_value, control_code);
+            let kmer_canon_value = std::cmp::min(kmer.bits(), kmer_rc.bits());
+            let minimizer_pos = self.index.skew_index.lookup(&kmer_canon_value, control_code);
             if minimizer_pos == INVALID_UINT64 {
                 return (INVALID_UINT64, 1);
             }
@@ -443,7 +443,7 @@ impl Dictionary {
             // Read k-mer directly at absolute position (no binary search needed)
             let stored_kmer = self.spss.decode_kmer_at::<K>(kmer_pos as usize);
             
-            if stored_kmer.as_u64() == query_kmer.as_u64() {
+            if stored_kmer.bits() == query_kmer.bits() {
                 // Boundary check: locate string for kmer_pos (matching C++)
                 if let Some((_sid, string_begin, string_end)) = self.spss.locate_with_end(kmer_pos) {
                     if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
@@ -475,7 +475,7 @@ impl Dictionary {
         // Read k-mer directly at absolute position (no binary search needed!)
         let stored_kmer = self.spss.decode_kmer_at::<K>(kmer_pos as usize);
         
-        if stored_kmer.as_u64() == query_kmer.as_u64() {
+        if stored_kmer.bits() == query_kmer.bits() {
             // Boundary check matching C++ _lookup_regular:
             // Locate the string containing kmer_pos (using kmer_pos, not
             // minimizer_pos, matching C++ offset_to_id(kmer_offset)).
@@ -541,9 +541,9 @@ impl Dictionary {
         let stored_kmer = self.spss.decode_kmer_at::<K>(kmer_pos as usize);
         
         // Check if stored k-mer matches either forward or RC
-        let orientation = if stored_kmer.as_u64() == query_kmer.as_u64() {
+        let orientation = if stored_kmer.bits() == query_kmer.bits() {
             1i8  // Forward orientation
-        } else if stored_kmer.as_u64() == kmer_rc.as_u64() {
+        } else if stored_kmer.bits() == kmer_rc.bits() {
             -1i8 // Backward orientation
         } else {
             return None;
@@ -934,7 +934,7 @@ impl Dictionary {
         } else if (control_code & 0b11) == 0b01 {
             self.lookup_in_light_bucket::<K>(kmer, mini_info, control_code)
         } else if (control_code & 0b11) == 0b11 {
-            let minimizer_pos = self.index.skew_index.lookup(kmer.as_u64(), control_code);
+            let minimizer_pos = self.index.skew_index.lookup(&kmer.bits(), control_code);
             if minimizer_pos == INVALID_UINT64 {
                 return crate::streaming_query::LookupResult::not_found();
             }
@@ -985,8 +985,8 @@ impl Dictionary {
         } else if (control_code & 0b11) == 0b11 {
             // Must use canonical kmer (min of fwd and rc) since the skew index
             // MPHF was built with canonical kmers (matching C++ behavior).
-            let kmer_canon_value = std::cmp::min(kmer.as_u64(), kmer_rc.as_u64());
-            let minimizer_pos = self.index.skew_index.lookup(kmer_canon_value, control_code);
+            let kmer_canon_value = std::cmp::min(kmer.bits(), kmer_rc.bits());
+            let minimizer_pos = self.index.skew_index.lookup(&kmer_canon_value, control_code);
             if minimizer_pos == INVALID_UINT64 {
                 return crate::streaming_query::LookupResult::not_found();
             }
