@@ -983,7 +983,10 @@ impl Dictionary {
         } else if (control_code & 0b11) == 0b01 {
             self.lookup_in_light_bucket_canonical::<K>(kmer, kmer_rc, mini_info, control_code)
         } else if (control_code & 0b11) == 0b11 {
-            let minimizer_pos = self.index.skew_index.lookup(kmer.as_u64(), control_code);
+            // Must use canonical kmer (min of fwd and rc) since the skew index
+            // MPHF was built with canonical kmers (matching C++ behavior).
+            let kmer_canon_value = std::cmp::min(kmer.as_u64(), kmer_rc.as_u64());
+            let minimizer_pos = self.index.skew_index.lookup(kmer_canon_value, control_code);
             if minimizer_pos == INVALID_UINT64 {
                 return crate::streaming_query::LookupResult::not_found();
             }
