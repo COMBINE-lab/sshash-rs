@@ -689,6 +689,18 @@ impl Dictionary {
     {
         self.spss.decode_kmer::<K>(string_id, pos)
     }
+
+    /// Decode the k-mer at an absolute base position in the SPSS.
+    ///
+    /// Used by the mapping kernel to compare read k-mers against reference
+    /// k-mers without performing a full dictionary lookup.
+    #[inline]
+    pub fn kmer_at_pos<const K: usize>(&self, absolute_base_pos: usize) -> Kmer<K>
+    where
+        Kmer<K>: KmerBits,
+    {
+        self.spss.decode_kmer_at(absolute_base_pos)
+    }
     
     /// Get the number of unique minimizers
     pub fn num_minimizers(&self) -> u64 {
