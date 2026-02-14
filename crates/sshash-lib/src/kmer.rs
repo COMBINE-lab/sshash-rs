@@ -296,6 +296,33 @@ where
         Self::from_str(s)
     }
 
+    /// Create a k-mer from ASCII DNA bytes without validation.
+    ///
+    /// Uses the `(byte >> 1) & 3` trick which maps uppercase ASCII DNA bases
+    /// to the SSHash encoding (A=00, C=01, T=10, G=11) without branching.
+    ///
+    /// # Safety contract
+    /// The caller must ensure `bytes.len() == K` and all bytes are valid
+    /// uppercase DNA bases (A, C, G, T). Lowercase or invalid bytes produce
+    /// incorrect but not undefined results.
+    #[inline]
+    pub fn from_ascii_unchecked(bytes: &[u8]) -> Self {
+        debug_assert_eq!(bytes.len(), K);
+        if K <= 31 {
+            let mut bits: u64 = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                bits |= (((b >> 1) & 3) as u64) << (i * 2);
+            }
+            Self { bits: <Kmer<K> as KmerBits>::from_u64(bits) }
+        } else {
+            let mut bits: u128 = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                bits |= (((b >> 1) & 3) as u128) << (i * 2);
+            }
+            Self { bits: <Kmer<K> as KmerBits>::from_u128(bits) }
+        }
+    }
+
     /// Get the reverse complement of this k-mer
     ///
     /// Uses bit-parallel operations: complement via XOR, then reverse 2-bit pairs.

@@ -415,7 +415,7 @@ where
         engine.reset();
         for i in 0..=(seq.len() - k) {
             let kmer_str = &seq[i..i + k];
-            let result = engine.lookup(kmer_str);
+            let result = engine.lookup(kmer_str.as_bytes());
             if result.is_found() {
                 found += 1;
                 if shown < 10 {
@@ -602,7 +602,7 @@ where
                 LookupResult::not_found()
             };
 
-            let streaming_result = engine.lookup(kmer_str);
+            let streaming_result = engine.lookup(kmer_str.as_bytes());
 
             // Compare fields matching C++ equal_lookup_result:
             // kmer_id, kmer_id_in_string, kmer_orientation, string_id, string_begin, string_end

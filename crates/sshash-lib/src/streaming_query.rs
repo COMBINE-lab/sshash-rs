@@ -179,24 +179,24 @@ where
     ///
     /// # Returns
     /// A LookupResult indicating whether the k-mer was found and its location
-    pub fn lookup(&mut self, kmer_str: &str) -> LookupResult {
+    pub fn lookup(&mut self, kmer_bytes: &[u8]) -> LookupResult {
         // MVP version without Dictionary integration (always seeds)
-        self.lookup_internal(kmer_str, None)
+        self.lookup_internal(kmer_bytes, None)
     }
-    
+
     /// Perform a streaming lookup with dictionary integration
     ///
     /// Internal method used by StreamingQueryEngine
-    pub(crate) fn lookup_with_dict(&mut self, kmer_str: &str, dict: &crate::dictionary::Dictionary) -> LookupResult {
-        self.lookup_internal(kmer_str, Some(dict))
+    pub(crate) fn lookup_with_dict(&mut self, kmer_bytes: &[u8], dict: &crate::dictionary::Dictionary) -> LookupResult {
+        self.lookup_internal(kmer_bytes, Some(dict))
     }
-    
-    fn lookup_internal(&mut self, kmer_str: &str, dict_opt: Option<&crate::dictionary::Dictionary>) -> LookupResult {
+
+    fn lookup_internal(&mut self, kmer_bytes: &[u8], dict_opt: Option<&crate::dictionary::Dictionary>) -> LookupResult {
         // 1. Validation
         let is_valid = if self.start {
-            self.is_valid_kmer(kmer_str)
+            self.is_valid_kmer_bytes(kmer_bytes)
         } else {
-            self.is_valid_base(kmer_str.as_bytes()[self.k - 1])
+            self.is_valid_base(kmer_bytes[self.k - 1])
         };
 
         if !is_valid {
@@ -207,22 +207,14 @@ where
 
         // 2. Compute k-mer and reverse complement, update minimizers
         if self.start {
-            // First k-mer: parse from scratch
-            match Kmer::from_str(kmer_str) {
-                Ok(km) => {
-                    self.kmer = Some(km);
-                    let rc = km.reverse_complement();
-                    self.kmer_rc = Some(rc);
-                    
-                    self.curr_mini_info = self.minimizer_it.next(km);
-                    self.curr_mini_info_rc = self.minimizer_it_rc.next(rc);
-                }
-                Err(_) => {
-                    self.num_invalid += 1;
-                    self.reset();
-                    return self.result.clone();
-                }
-            }
+            // First k-mer: parse from scratch using fast byte encoding
+            let km = Kmer::<K>::from_ascii_unchecked(kmer_bytes);
+            self.kmer = Some(km);
+            let rc = km.reverse_complement();
+            self.kmer_rc = Some(rc);
+
+            self.curr_mini_info = self.minimizer_it.next(km);
+            self.curr_mini_info_rc = self.minimizer_it_rc.next(rc);
         } else {
             // Update incrementally: drop first base, add new last base
             if let Some(mut km) = self.kmer {
@@ -231,9 +223,9 @@ where
                     let base = km.get_base(i + 1);
                     km.set_base(i, base);
                 }
-                
+
                 // Add new last base
-                let new_base = kmer_str.as_bytes()[self.k - 1];
+                let new_base = kmer_bytes[self.k - 1];
                 if let Ok(encoded) = encode_base(new_base) {
                     km.set_base(self.k - 1, encoded);
 
@@ -280,12 +272,12 @@ where
         self.result.clone()
     }
 
-    /// Validate a full k-mer string
-    fn is_valid_kmer(&self, s: &str) -> bool {
-        if s.len() != self.k {
+    /// Validate a full k-mer byte slice
+    fn is_valid_kmer_bytes(&self, bytes: &[u8]) -> bool {
+        if bytes.len() != self.k {
             return false;
         }
-        for &b in s.as_bytes() {
+        for &b in bytes {
             if !matches!(b, b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't') {
                 return false;
             }
@@ -495,9 +487,9 @@ mod tests {
     fn test_streaming_query_validation() {
         let query: StreamingQuery<31> = StreamingQuery::new(31, 13, true);
         
-        assert!(query.is_valid_kmer("ACGTACGTACGTACGTACGTACGTACGTACG")); // 31 bases
-        assert!(!query.is_valid_kmer("ACGT")); // Too short
-        assert!(!query.is_valid_kmer("ACGTACGTACGTACGTACGTACGTACGTACGN")); // Invalid base
+        assert!(query.is_valid_kmer_bytes(b"ACGTACGTACGTACGTACGTACGTACGTACG")); // 31 bases
+        assert!(!query.is_valid_kmer_bytes(b"ACGT")); // Too short
+        assert!(!query.is_valid_kmer_bytes(b"ACGTACGTACGTACGTACGTACGTACGTACGN")); // Invalid base
         
         assert!(query.is_valid_base(b'A'));
         assert!(query.is_valid_base(b'a'));
@@ -509,13 +501,13 @@ mod tests {
         let mut query: StreamingQuery<15> = StreamingQuery::new(15, 7, true);
         
         // Invalid: too short
-        let result = query.lookup("ACGT");
+        let result = query.lookup(b"ACGT");
         assert!(!result.is_found());
         assert_eq!(query.num_invalid_lookups(), 1);
-        
+
         // Invalid: has 'N'
         query.reset();
-        let result = query.lookup("ACGTACGTACGTACN");
+        let result = query.lookup(b"ACGTACGTACGTACN");
         assert!(!result.is_found());
         assert_eq!(query.num_invalid_lookups(), 2);
     }
@@ -523,13 +515,13 @@ mod tests {
     #[test]
     fn test_streaming_query_incremental_update() {
         let mut query: StreamingQuery<9> = StreamingQuery::new(9, 5, false);
-        
+
         // First lookup
-        let _result1 = query.lookup("ACGTACGTA");
+        let _result1 = query.lookup(b"ACGTACGTA");
         assert!(!query.start); // No longer in start state
-        
+
         // Second lookup (sliding by 1)
-        let _result2 = query.lookup("CGTACGTAC");
+        let _result2 = query.lookup(b"CGTACGTAC");
         
         // Even though lookups fail (no dictionary), state should update
         assert!(!query.start);
@@ -567,9 +559,9 @@ where
     }
     
     /// Perform a streaming lookup
-    pub fn lookup(&mut self, kmer_str: &str) -> LookupResult {
+    pub fn lookup(&mut self, kmer_bytes: &[u8]) -> LookupResult {
         // Perform streaming lookup with dictionary integration
-        self.query.lookup_with_dict(kmer_str, self.dict)
+        self.query.lookup_with_dict(kmer_bytes, self.dict)
     }
     
     /// Get the number of full searches performed
