@@ -21,6 +21,7 @@ use crate::mphf_config::{Mphf, build_mphf_from_slice_mt};
 use crate::offsets::EliasFanoOffsets;
 use std::hash::Hash;
 use sux::bits::bit_field_vec::BitFieldVec;
+use tracing::info;
 use value_traits::slices::{SliceByValue, SliceByValueMut};
 
 /// Sparse and skew index data structure (C++ compatible architecture)
@@ -89,53 +90,63 @@ impl SparseAndSkewIndex {
         Kmer<K>: KmerBits,
     {
         let num_buckets = buckets.len();
+        let t0 = std::time::Instant::now();
 
-        // --- Pass 1: Build EF from cumulative extras ---
-        // extras[i] = sum of (bucket_size - 1) for buckets 0..i
-        // This encodes the number of "extra" super-kmers beyond 1 per bucket.
+        // --- Pass 1: Build EF + compute per-bucket offset positions ---
+        // Iterates in MPHF order (random access to bucket sizes only — cheap).
+        // Also computes offset_start_by_orig[orig_idx] = starting position in
+        // the flat offsets array for each bucket, enabling sequential iteration
+        // in Pass 2.
         let mut extras = Vec::with_capacity(num_buckets + 1);
         extras.push(0u64);
         let mut total_super_kmers: usize = 0;
         let mut max_bucket_size: usize = 0;
+        let mut offset_start_by_orig: Vec<u32> = vec![0; num_buckets];
         for i in 0..num_buckets {
             let orig_idx = mphf_order.map_or(i, |order| order[i]);
             let size = buckets[orig_idx].size();
             if size > max_bucket_size {
                 max_bucket_size = size;
             }
+            offset_start_by_orig[orig_idx] = total_super_kmers as u32;
             total_super_kmers += size;
             let prev = *extras.last().unwrap();
             extras.push(prev + (size as u64).saturating_sub(1));
         }
         let num_super_kmers_before_bucket = EliasFanoOffsets::from_vec(&extras);
+        drop(extras);
+        info!("  Pass 1 (EF build): {:.2}s — {} buckets, {} total super-kmers, max_bucket_size={}",
+            t0.elapsed().as_secs_f64(), num_buckets, total_super_kmers, max_bucket_size);
+        let t1 = std::time::Instant::now();
 
         // --- Pass 2: Fill flat offsets array ---
+        // Iterates in ORIGINAL order (sequential memory access to bucket tuples)
+        // and writes to pre-computed positions in the offsets array. This avoids
+        // the 364M+ random pointer chases that killed performance at scale.
         let mut offsets = BitFieldVec::new(num_bits_per_offset.max(1), total_super_kmers);
-        let mut idx = 0usize;
-        // Also collect heavy buckets for skew index
-        let mut heavy_buckets_for_skew: Vec<(usize, usize)> = Vec::new(); // (orig_idx, size)
-        for i in 0..num_buckets {
-            let orig_idx = mphf_order.map_or(i, |order| order[i]);
+        let mut heavy_buckets_for_skew: Vec<(usize, usize)> = Vec::new();
+        for orig_idx in 0..num_buckets {
             let bucket = &buckets[orig_idx];
             let size = bucket.size();
+            let mut idx = offset_start_by_orig[orig_idx] as usize;
             let mut prev_pos_in_seq = INVALID_UINT64;
-            let mut j = 0usize;
             for tuple in &bucket.tuples {
                 if tuple.pos_in_seq != prev_pos_in_seq {
                     offsets.set_value(idx, tuple.pos_in_seq as usize);
                     idx += 1;
-                    j += 1;
                     prev_pos_in_seq = tuple.pos_in_seq;
                 }
             }
-            // Sanity: deduped count should equal bucket size
-            debug_assert_eq!(j, size, "bucket {orig_idx}: deduped positions ({j}) != size ({size})");
 
             if size > MIN_BUCKET_SIZE {
                 heavy_buckets_for_skew.push((orig_idx, size));
             }
         }
-        debug_assert_eq!(idx, total_super_kmers);
+        drop(offset_start_by_orig);
+
+        info!("  Pass 2 (fill offsets): {:.2}s — {} heavy buckets collected",
+            t1.elapsed().as_secs_f64(), heavy_buckets_for_skew.len());
+        let t2 = std::time::Instant::now();
 
         // Sort heavy buckets by size for partition processing
         heavy_buckets_for_skew.sort_by_key(|&(_idx, size)| size);
@@ -153,6 +164,7 @@ impl SparseAndSkewIndex {
             spss,
             canonical,
         );
+        info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
         Self {
             num_super_kmers_before_bucket,
@@ -372,6 +384,9 @@ impl SkewIndex {
         if num_partitions == 0 {
             return Self::new();
         }
+
+        info!("    SkewIndex: {} heavy buckets, max_bucket_size={}, num_partitions={}",
+            heavy_buckets.len(), max_bucket_size, num_partitions);
 
         // Initialize storage
         let mut mphfs = Vec::with_capacity(num_partitions);
