@@ -236,8 +236,9 @@ where
                 let new_base = kmer_str.as_bytes()[self.k - 1];
                 if let Ok(encoded) = encode_base(new_base) {
                     km.set_base(self.k - 1, encoded);
+
                     self.kmer = Some(km);
-                    
+
                     // Update RC: pad (shift right), set first base to complement
                     if let Some(mut km_rc) = self.kmer_rc {
                         for i in (1..self.k).rev() {
@@ -248,8 +249,9 @@ where
                         // Complement of new base at position 0
                         let complement = crate::encoding::complement_base(encoded);
                         km_rc.set_base(0, complement);
+
                         self.kmer_rc = Some(km_rc);
-                        
+
                         self.curr_mini_info = self.minimizer_it.next(km);
                         self.curr_mini_info_rc = self.minimizer_it_rc.next(km_rc);
                     }
@@ -315,10 +317,17 @@ where
 
         if let (Some(dict), Some(kmer)) = (dict_opt, self.kmer) {
             if self._canonical {
-                // Canonical mode: matching C++ lookup_canonical logic in seed
+                // Canonical mode: matching C++ lookup_canonical logic in seed.
+                //
+                // Use freshly extracted minimizer info for the lookup because
+                // the streaming MinimizerIterator's pos_in_kmer can be wrong
+                // for RC k-mers (it doesn't account for the reverse sliding
+                // direction, matching C++'s reverse template parameter).
+                // The streaming values are still correct for the negative
+                // optimization check above (which only uses .value).
                 let kmer_rc = kmer.reverse_complement();
-                let mini_fwd = self.curr_mini_info;
-                let mini_rc = self.curr_mini_info_rc;
+                let mini_fwd = dict.extract_minimizer::<K>(&kmer);
+                let mini_rc = dict.extract_minimizer::<K>(&kmer_rc);
 
                 if mini_fwd.value < mini_rc.value {
                     self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_fwd);
@@ -331,14 +340,16 @@ where
                     }
                 }
             } else {
-                // Regular mode: try forward, then RC with backward orientation
-                // Matches C++ streaming_query::seed() for non-canonical
-                self.result = dict.lookup_regular_streaming::<K>(&kmer, self.curr_mini_info);
+                // Regular mode: try forward, then RC with backward orientation.
+                // Also use fresh minimizer extraction for correct pos_in_kmer.
+                let mini_fwd = dict.extract_minimizer::<K>(&kmer);
+                self.result = dict.lookup_regular_streaming::<K>(&kmer, mini_fwd);
                 let minimizer_found = self.result.minimizer_found;
                 if self.result.kmer_id == u64::MAX {
                     assert_eq!(self.result.kmer_orientation, 1); // forward
                     let kmer_rc = kmer.reverse_complement();
-                    self.result = dict.lookup_regular_streaming::<K>(&kmer_rc, self.curr_mini_info_rc);
+                    let mini_rc = dict.extract_minimizer::<K>(&kmer_rc);
+                    self.result = dict.lookup_regular_streaming::<K>(&kmer_rc, mini_rc);
                     self.result.kmer_orientation = -1; // backward
                     let minimizer_rc_found = self.result.minimizer_found;
                     self.result.minimizer_found = minimizer_rc_found || minimizer_found;

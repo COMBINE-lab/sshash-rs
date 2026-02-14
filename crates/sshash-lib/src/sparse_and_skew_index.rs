@@ -213,10 +213,18 @@ impl SparseAndSkewIndex {
             heavy_offset_tracker += bucket.size() as u64;
         }
         
-        // Use num_bits_per_offset + 1, matching C++ exactly.
-        // Singleton codes use num_bits_per_offset + 1 bits (pos_in_seq << 1),
-        // and light/heavy codes are bounded by the same width.
-        let control_codeword_bits = num_bits_per_offset + 1;
+        // Compute bit width from the actual maximum codeword value.
+        // Different bucket types produce codes of different widths:
+        //   Singleton: pos_in_seq << 1          → num_bits_per_offset + 1 bits
+        //   Light:     (bucket_id << MIN_L | size_code) << 2 | 01  → variable
+        //   Heavy:     (offset << 3 | partition_id) << 2 | 11     → variable
+        // For large datasets, light/heavy codes can exceed num_bits_per_offset + 1.
+        let max_codeword = control_codewords_tmp.iter().copied().max().unwrap_or(0);
+        let control_codeword_bits = if max_codeword == 0 {
+            1
+        } else {
+            (64 - max_codeword.leading_zeros()) as usize
+        };
         let mut control_codewords = BitFieldVec::new(control_codeword_bits, num_minimizers);
         for (i, &codeword) in control_codewords_tmp.iter().enumerate() {
             control_codewords.set_value(i, codeword as usize);

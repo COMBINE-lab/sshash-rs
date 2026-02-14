@@ -874,7 +874,7 @@ impl Dictionary {
 
     /// Extract the minimizer from a k-mer using the cached hasher.
     #[inline]
-    fn extract_minimizer<const K: usize>(&self, kmer: &Kmer<K>) -> MinimizerInfo
+    pub(crate) fn extract_minimizer<const K: usize>(&self, kmer: &Kmer<K>) -> MinimizerInfo
     where
         Kmer<K>: KmerBits,
     {
