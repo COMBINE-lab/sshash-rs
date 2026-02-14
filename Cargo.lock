@@ -1671,7 +1671,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "sux"
 version = "0.12.0"
-source = "git+https://github.com/vigna/sux-rs#ba0671c4b2f76074645f6d34400cc963a20f18c8"
+source = "git+https://github.com/vigna/sux-rs#54d27beb22f3b97b57ecd895f41db326a2d67303"
 dependencies = [
  "ambassador",
  "anyhow",

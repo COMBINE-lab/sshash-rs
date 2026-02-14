@@ -216,7 +216,7 @@ use mem_dbg::{MemSize, SizeFlags};
 /// Uses sux-rs `EfSeqDict` which provides:
 /// - O(1) random access via `get_unchecked(i)` (uses Select1)
 /// - O(1) successor query via `succ(x)` (uses Select0)
-/// - Bidirectional iterator from successor via `bidi_iter_from_succ(x)`:
+/// - Bidirectional iterator from successor via `iter_bidi_from_succ(x)`:
 ///   `next()`/`prev()` use `select_in_word` (single CPU instruction) for
 ///   cheap adjacent-element access without full Select1 inventory lookup.
 ///
@@ -256,7 +256,7 @@ impl EliasFanoOffsets {
     /// Locate which string contains a given absolute position, returning
     /// `(string_id, string_begin, string_end)`.
     ///
-    /// Uses sux-rs `bidi_iter_from_succ()` to find the successor, then
+    /// Uses sux-rs `iter_bidi_from_succ()` to find the successor, then
     /// cheap `next()`/`prev()` calls (single-instruction bit scans) to
     /// read adjacent elements without full Select1 inventory lookups.
     #[inline]
@@ -266,9 +266,9 @@ impl EliasFanoOffsets {
             return None;
         }
 
-        // bidi_iter_from_succ returns (index, positioned_iterator) for the
+        // iter_bidi_from_succ returns (index, positioned_iterator) for the
         // first element >= pos. The first next() yields the successor value.
-        let (idx, mut iter) = self.ef.bidi_iter_from_succ(pos as usize)?;
+        let (idx, mut iter) = self.ef.iter_bidi_from_succ(pos as usize)?;
 
         // Get the successor value (cheap: reads from cached word).
         let val = iter.next()?;
@@ -298,7 +298,7 @@ impl EliasFanoOffsets {
     /// Returns `(string_id, string_begin)` where
     /// `offsets[string_id] <= pos < offsets[string_id + 1]`.
     ///
-    /// Uses `bidi_iter_from_succ()` + cheap `prev()` bit scans
+    /// Uses `iter_bidi_from_succ()` + cheap `prev()` bit scans
     /// instead of full Select1 for adjacent element access.
     #[inline]
     pub fn locate(&self, pos: u64) -> Option<(u64, u64)> {
@@ -307,7 +307,7 @@ impl EliasFanoOffsets {
             return None;
         }
 
-        let (idx, mut iter) = self.ef.bidi_iter_from_succ(pos as usize)?;
+        let (idx, mut iter) = self.ef.iter_bidi_from_succ(pos as usize)?;
         let val = iter.next()?;
 
         if val == pos as usize {
