@@ -57,7 +57,7 @@ const MPHF_MAGIC: &[u8; 8] = b"SSHIMH01";
 
 /// File format version: (major, minor)
 /// Increment major on breaking changes, minor on compatible changes
-const FORMAT_VERSION: (u32, u32) = (2, 0);
+const FORMAT_VERSION: (u32, u32) = (3, 0);
 const MPHF_FORMAT_VERSION: (u32, u32) = (1, 0);
 
 /// Header for the serialized Dictionary

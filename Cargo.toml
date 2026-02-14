@@ -17,8 +17,8 @@ repository = "https://github.com/jermp/sshash"
 # Core library
 sshash-lib = { path = "crates/sshash-lib" }
 
-# Succinct data structures
-sux = { version = "0.11", features = ["epserde"] }
+# Succinct data structures (git main for bidirectional EF iterator support)
+sux = { git = "https://github.com/vigna/sux-rs", features = ["epserde"] }
 
 # Minimal perfect hashing (dev branch for PHast serialization support)
 ph = { git = "https://github.com/beling/bsuccinct-rs", default-features = false }

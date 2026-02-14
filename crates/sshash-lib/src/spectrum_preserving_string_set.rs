@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 /// Stores all strings in a bit-packed format with offsets to each string.
 /// This allows for both memory-efficient storage and efficient access patterns.
 ///
-/// Offsets are stored using Elias-Fano encoding (via cseq) for compact
+/// Offsets are stored using Elias-Fano encoding (via sux-rs) for compact
 /// representation and O(1) `locate()` via successor queries with Cursor.
 pub struct SpectrumPreservingStringSet {
     /// Bit-packed string data (2 bits per base)
@@ -260,8 +260,8 @@ impl SpectrumPreservingStringSet {
     /// - m: u64 (LE)
     /// - strings_len: u64 (LE)
     /// - strings: [u8; strings_len]
-    /// - offsets: cseq Elias-Fano binary format
-    pub fn serialize_to(&self, writer: &mut dyn Write) -> io::Result<()> {
+    /// - offsets: epserde Elias-Fano binary format
+    pub fn serialize_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&(self.k as u64).to_le_bytes())?;
         writer.write_all(&(self.m as u64).to_le_bytes())?;
         writer.write_all(&(self.strings.len() as u64).to_le_bytes())?;
@@ -271,7 +271,7 @@ impl SpectrumPreservingStringSet {
     }
 
     /// Deserialize an SPSS from a reader.
-    pub fn deserialize_from(reader: &mut dyn Read) -> io::Result<Self> {
+    pub fn deserialize_from<R: Read>(reader: &mut R) -> io::Result<Self> {
         let mut buf8 = [0u8; 8];
         reader.read_exact(&mut buf8)?;
         let k = u64::from_le_bytes(buf8) as usize;

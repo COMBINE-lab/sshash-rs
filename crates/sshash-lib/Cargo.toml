@@ -12,9 +12,6 @@ description = "Sparse and Skew Hashing of k-mers - Core library"
 # Succinct data structures
 sux = { workspace = true }
 
-# Compact sequences — Elias-Fano with stateful Cursor for cheap adjacent access
-cseq = "0.1"
-
 # Minimal perfect hashing  
 ph = { workspace = true }
 
@@ -22,7 +19,7 @@ ph = { workspace = true }
 needletail = { workspace = true }
 
 # Serialization
-epserde = "0.11"  # Must match sux's epserde version (sux 0.11 uses epserde 0.11)
+epserde = "0.12"  # Must match sux's epserde version (sux 0.12 uses epserde 0.12)
 
 # Error handling
 anyhow = { workspace = true }
@@ -44,10 +41,7 @@ ahash = "0.8"
 value-traits = "0.2"
 
 # Memory usage measurement (must match sux's version)
-mem_dbg = "0.3.0"
-
-# Memory usage measurement for cseq types
-dyn_size_of = "0.4"
+mem_dbg = "0.4.0"
 
 # Memory mapping (for external sorting)
 memmap2 = { workspace = true }
