@@ -91,27 +91,17 @@ impl DictionaryBuilder {
         let (control_map, bucket_id_by_mphf_index) = self.build_control_map(&buckets)?;
         info!("  Built MPHF for {} minimizers", control_map.num_minimizers());
         
-        // Step 6: Reorder buckets to MPHF order, then build sparse and skew index.
-        // The EF + offsets layout requires buckets to be in MPHF order so that
-        // locate_bucket(mphf(minimizer)) returns the correct range.
+        // Step 6: Build sparse and skew index using indirect MPHF-order iteration.
+        // Instead of physically reordering 364M+ Bucket objects (~30GB for large
+        // datasets), we pass the MPHF→original index mapping and iterate in
+        // MPHF order via indirection.
         info!("Step 6: Building sparse and skew index...");
-        let reordered_buckets = if !bucket_id_by_mphf_index.is_empty() {
-            let mut buckets = buckets;
-            let n = buckets.len();
-            let mut reordered = Vec::with_capacity(n);
-            // Use a visited marker to avoid double-moves: swap each bucket
-            // into a temporary and push into reordered in MPHF order.
-            let mut taken: Vec<Option<crate::builder::buckets::Bucket>> =
-                buckets.drain(..).map(Some).collect();
-            for &bucket_idx in &bucket_id_by_mphf_index {
-                reordered.push(taken[bucket_idx].take()
-                    .expect("bucket_id_by_mphf_index contains duplicate index"));
-            }
-            reordered
+        let mphf_order = if !bucket_id_by_mphf_index.is_empty() {
+            Some(bucket_id_by_mphf_index)
         } else {
-            buckets
+            None
         };
-        let index = self.build_index(reordered_buckets, &spss)?;
+        let index = self.build_index(&buckets, mphf_order.as_deref(), &spss)?;
         info!("  Index built successfully");
         
         // Step 7: Assemble dictionary
@@ -222,24 +212,21 @@ impl DictionaryBuilder {
     /// Build the sparse and skew index
     fn build_index(
         &self,
-        buckets: Vec<crate::builder::buckets::Bucket>,
+        buckets: &[crate::builder::buckets::Bucket],
+        mphf_order: Option<&[usize]>,
         spss: &SpectrumPreservingStringSet,
     ) -> Result<SparseAndSkewIndex, String> {
-            let _k = self.config.k as u64;
-            let _m = self.config.m as u64;
-        
-            // Calculate offset encoding bits (matching C++ decoded_offsets)
-            // pos_in_seq stores absolute position in concatenated SPSS
-            // So num_bits_per_offset = ceil_log2(total_bases)
-            let total_bases = spss.total_bases();
-            let num_bits_per_offset = crate::constants::ceil_log2(total_bases);
-        
+        // Calculate offset encoding bits (matching C++ decoded_offsets)
+        // pos_in_seq stores absolute position in concatenated SPSS
+        // So num_bits_per_offset = ceil_log2(total_bases)
+        let total_bases = spss.total_bases();
+        let num_bits_per_offset = crate::constants::ceil_log2(total_bases);
 
         // Dispatch to appropriate build function based on k
         let index = crate::dispatch_on_k!(self.config.k, K => {
-            SparseAndSkewIndex::build::<K>(buckets, num_bits_per_offset, spss, self.config.canonical)
+            SparseAndSkewIndex::build::<K>(buckets, mphf_order, num_bits_per_offset, spss, self.config.canonical)
         });
-        
+
         Ok(index)
     }
 }

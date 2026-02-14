@@ -57,6 +57,14 @@ pub fn build_mphf_from_vec<T: Hash>(keys: Vec<T>) -> Mphf {
     Mphf::with_vec_p_hash_sc(keys, &mphf_params(), mphf_hasher(), phast::SeedOnly)
 }
 
+/// Build an MPHF from a slice of keys using multiple threads.
+///
+/// Falls back to single-threaded construction when `threads == 1`.
+/// Uses rayon internally (PHast's `_mt` variant).
+pub fn build_mphf_from_slice_mt<T: Hash + Sync + Send + Clone>(keys: &[T], threads: usize) -> Mphf {
+    Mphf::with_slice_p_threads_hash_sc(keys, &mphf_params(), threads, mphf_hasher(), phast::SeedOnly)
+}
+
 /// Read (deserialize) an MPHF from a reader.
 ///
 /// Uses the same deterministic ahash hasher and SeedOnly chooser

@@ -29,7 +29,9 @@ pub trait KmerBits: Sized {
         + Not<Output = Self::Storage>
         + Shl<usize, Output = Self::Storage>
         + Shr<usize, Output = Self::Storage>
-        + Shr<i32, Output = Self::Storage>;
+        + Shr<i32, Output = Self::Storage>
+        + Send
+        + Sync;
 
     /// Number of bits in the storage type
     const BITS: usize;

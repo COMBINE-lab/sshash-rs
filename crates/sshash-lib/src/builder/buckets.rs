@@ -168,10 +168,13 @@ impl BucketType {
 pub struct Bucket {
     /// The minimizer value for this bucket
     pub minimizer: u64,
-    
+
     /// All tuples with this minimizer
     pub tuples: Vec<MinimizerTuple>,
-    
+
+    /// Cached number of unique super-kmers (distinct pos_in_seq values)
+    pub cached_size: usize,
+
     /// Bucket type classification
     pub bucket_type: BucketType,
 }
@@ -191,24 +194,19 @@ impl Bucket {
         Self {
             minimizer,
             tuples,
+            cached_size: bucket_size,
             bucket_type,
         }
     }
-    
-    /// Get the bucket size
+
+    /// Get the bucket size (number of unique super-kmers)
+    #[inline]
     pub fn size(&self) -> usize {
-        let mut size = 0usize;
-        let mut prev_pos_in_seq = INVALID_UINT64;
-        for tuple in &self.tuples {
-            if tuple.pos_in_seq != prev_pos_in_seq {
-                size += 1;
-                prev_pos_in_seq = tuple.pos_in_seq;
-            }
-        }
-        size
+        self.cached_size
     }
-    
+
     /// Get the bucket type
+    #[inline]
     pub fn bucket_type(&self) -> BucketType {
         self.bucket_type
     }

@@ -17,7 +17,7 @@
 use crate::builder::buckets::{Bucket, MIN_BUCKET_SIZE};
 use crate::constants::{ceil_log2, MIN_L, MAX_L, INVALID_UINT64};
 use crate::kmer::{Kmer, KmerBits};
-use crate::mphf_config::{Mphf, build_mphf_from_slice};
+use crate::mphf_config::{Mphf, build_mphf_from_slice_mt};
 use crate::offsets::EliasFanoOffsets;
 use std::hash::Hash;
 use sux::bits::bit_field_vec::BitFieldVec;
@@ -68,16 +68,19 @@ impl SparseAndSkewIndex {
 
     /// Build the sparse and skew index from classified buckets.
     ///
-    /// Buckets must already be in MPHF order (reordered by the caller) so that
-    /// `locate_bucket(mphf(minimizer))` returns the correct range.
+    /// If `mphf_order` is provided, it maps MPHF index → original bucket index,
+    /// allowing indirect iteration in MPHF order without physically reordering
+    /// the bucket array. If `None`, buckets are assumed to already be in order.
     ///
     /// # Arguments
-    /// * `buckets` - Classified buckets in MPHF index order
+    /// * `buckets` - Classified buckets (in original or MPHF order)
+    /// * `mphf_order` - Optional mapping: mphf_index → original_bucket_index
     /// * `num_bits_per_offset` - Number of bits needed to represent max offset
     /// * `spss` - The SPSS for decoding k-mers (needed for skew index)
     /// * `canonical` - Whether to use canonical k-mers for MPHF keys
     pub fn build<const K: usize>(
-        buckets: Vec<Bucket>,
+        buckets: &[Bucket],
+        mphf_order: Option<&[usize]>,
         num_bits_per_offset: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
         canonical: bool,
@@ -94,8 +97,9 @@ impl SparseAndSkewIndex {
         extras.push(0u64);
         let mut total_super_kmers: usize = 0;
         let mut max_bucket_size: usize = 0;
-        for bucket in &buckets {
-            let size = bucket.size();
+        for i in 0..num_buckets {
+            let orig_idx = mphf_order.map_or(i, |order| order[i]);
+            let size = buckets[orig_idx].size();
             if size > max_bucket_size {
                 max_bucket_size = size;
             }
@@ -109,8 +113,10 @@ impl SparseAndSkewIndex {
         let mut offsets = BitFieldVec::new(num_bits_per_offset.max(1), total_super_kmers);
         let mut idx = 0usize;
         // Also collect heavy buckets for skew index
-        let mut heavy_buckets_for_skew: Vec<(usize, &Bucket)> = Vec::new();
-        for (bucket_idx, bucket) in buckets.iter().enumerate() {
+        let mut heavy_buckets_for_skew: Vec<(usize, usize)> = Vec::new(); // (orig_idx, size)
+        for i in 0..num_buckets {
+            let orig_idx = mphf_order.map_or(i, |order| order[i]);
+            let bucket = &buckets[orig_idx];
             let size = bucket.size();
             let mut prev_pos_in_seq = INVALID_UINT64;
             let mut j = 0usize;
@@ -123,20 +129,26 @@ impl SparseAndSkewIndex {
                 }
             }
             // Sanity: deduped count should equal bucket size
-            debug_assert_eq!(j, size, "bucket {bucket_idx}: deduped positions ({j}) != size ({size})");
+            debug_assert_eq!(j, size, "bucket {orig_idx}: deduped positions ({j}) != size ({size})");
 
             if size > MIN_BUCKET_SIZE {
-                heavy_buckets_for_skew.push((bucket_idx, bucket));
+                heavy_buckets_for_skew.push((orig_idx, size));
             }
         }
         debug_assert_eq!(idx, total_super_kmers);
 
         // Sort heavy buckets by size for partition processing
-        heavy_buckets_for_skew.sort_by_key(|(_idx, b)| b.size());
+        heavy_buckets_for_skew.sort_by_key(|&(_idx, size)| size);
+
+        // Build references for skew index
+        let heavy_refs: Vec<(usize, &Bucket)> = heavy_buckets_for_skew
+            .iter()
+            .map(|&(orig_idx, _size)| (orig_idx, &buckets[orig_idx]))
+            .collect();
 
         // --- Pass 3: Build skew index for heavy buckets ---
         let skew_index = SkewIndex::build::<K>(
-            &heavy_buckets_for_skew,
+            &heavy_refs,
             max_bucket_size,
             spss,
             canonical,
@@ -563,13 +575,15 @@ impl SkewIndex {
 /// Build an MPHF for a partition's k-mers.
 ///
 /// Generic over the key type (`u64` for K <= 31, `u128` for K > 31).
-fn build_partition_mphf<T: Hash + Clone>(kmers: &[T]) -> Option<Mphf> {
+/// Uses multi-threaded PHast construction via the current rayon pool.
+fn build_partition_mphf<T: Hash + Clone + Sync + Send>(kmers: &[T]) -> Option<Mphf> {
     if kmers.is_empty() {
         return None;
     }
 
-    // Build MPHF using PHast with ahash
-    Some(build_mphf_from_slice(kmers))
+    // Use all threads in the current rayon pool for MPHF construction
+    let threads = rayon::current_num_threads();
+    Some(build_mphf_from_slice_mt(kmers, threads))
 }
 
 impl Default for SkewIndex {
@@ -603,7 +617,7 @@ mod tests {
         let bucket = Bucket::new(100, vec![MinimizerTuple::new(100, 50, 0)]);
         let buckets = vec![bucket];
 
-        let index = SparseAndSkewIndex::build::<31>(buckets, 32, &spss, false);
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
 
         // Should have 1 bucket
         assert_eq!(index.num_buckets(), 1);
@@ -633,7 +647,7 @@ mod tests {
         ]);
         let buckets = vec![bucket];
 
-        let index = SparseAndSkewIndex::build::<31>(buckets, 32, &spss, false);
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
 
         // Should have 1 bucket with 3 offsets
         assert_eq!(index.num_buckets(), 1);
@@ -668,7 +682,7 @@ mod tests {
             Bucket::new(300, vec![MinimizerTuple::new(300, 200, 0)]), // Singleton
         ];
 
-        let index = SparseAndSkewIndex::build::<31>(buckets, 32, &spss, false);
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
 
         assert_eq!(index.num_buckets(), 3);
         assert_eq!(index.num_offsets(), 4); // 1 + 2 + 1
