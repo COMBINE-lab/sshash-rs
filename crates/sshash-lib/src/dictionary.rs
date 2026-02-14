@@ -43,6 +43,35 @@ pub struct Dictionary {
     hasher: crate::hasher::DeterministicHasher,
 }
 
+/// Successful k-mer lookup with cached locate info to avoid
+/// a redundant second Elias-Fano successor query.
+#[derive(Clone, Copy)]
+struct LocatedHit {
+    kmer_offset: u64,
+    orientation: i8,
+    string_id: u64,
+    string_begin: u64,
+    string_end: u64,
+}
+
+impl LocatedHit {
+    #[inline]
+    fn into_lookup_result(self, k: usize) -> crate::streaming_query::LookupResult {
+        let kmer_id_in_string = self.kmer_offset - self.string_begin;
+        let kmer_id = self.kmer_offset - self.string_id * (k as u64 - 1);
+        crate::streaming_query::LookupResult {
+            kmer_id,
+            kmer_id_in_string,
+            kmer_offset: self.kmer_offset,
+            kmer_orientation: self.orientation,
+            string_id: self.string_id,
+            string_begin: self.string_begin,
+            string_end: self.string_end,
+            minimizer_found: true,
+        }
+    }
+}
+
 impl Dictionary {
     /// Create a new dictionary from components
     pub fn new(
@@ -111,26 +140,9 @@ impl Dictionary {
             return None;
         }
 
-        let kmer_pos = self.lookup_in_bucket::<K>(kmer, minimizer_info, bucket_id);
-
-        if kmer_pos == INVALID_UINT64 {
-            return None;
-        }
-
-        let (string_id, string_begin, string_end) = self.spss.locate_with_end(kmer_pos)?;
-        let kmer_id_in_string = kmer_pos - string_begin;
-        let kmer_id = kmer_pos - string_id * (self.k as u64 - 1);
-
-        Some(crate::streaming_query::LookupResult {
-            kmer_id,
-            kmer_id_in_string,
-            kmer_offset: kmer_pos,
-            kmer_orientation: orientation,
-            string_id,
-            string_begin,
-            string_end,
-            minimizer_found: true,
-        })
+        let mut hit = self.lookup_in_bucket::<K>(kmer, minimizer_info, bucket_id)?;
+        hit.orientation = orientation;
+        Some(hit.into_lookup_result(self.k))
     }
 
     /// Internal: canonical lookup returning full LookupResult.
@@ -142,30 +154,9 @@ impl Dictionary {
     where
         Kmer<K>: KmerBits,
     {
-        let (kmer_offset, orientation) = self.lookup_canonical_with_orientation(kmer);
-        if kmer_offset == INVALID_UINT64 {
-            return crate::streaming_query::LookupResult::not_found();
-        }
-
-        let (string_id, string_begin, string_end) = match self.spss.locate_with_end(kmer_offset) {
-            Some(triple) => triple,
-            None => return crate::streaming_query::LookupResult::not_found(),
-        };
-        if kmer_offset > string_end - self.k as u64 {
-            return crate::streaming_query::LookupResult::not_found();
-        }
-        let kmer_id_in_string = kmer_offset - string_begin;
-        let kmer_id = kmer_offset - string_id * (self.k as u64 - 1);
-
-        crate::streaming_query::LookupResult {
-            kmer_id,
-            kmer_id_in_string,
-            kmer_offset,
-            kmer_orientation: orientation,
-            string_id,
-            string_begin,
-            string_end,
-            minimizer_found: true,
+        match self.lookup_canonical_located(kmer) {
+            Some(hit) => hit.into_lookup_result(self.k),
+            None => crate::streaming_query::LookupResult::not_found(),
         }
     }
 
@@ -249,12 +240,25 @@ impl Dictionary {
             return (INVALID_UINT64, 1);
         }
 
-        let pos = self.lookup_in_bucket::<K>(kmer, minimizer_info, bucket_id);
-        (pos, 1)
+        match self.lookup_in_bucket::<K>(kmer, minimizer_info, bucket_id) {
+            Some(hit) => (hit.kmer_offset, 1),
+            None => (INVALID_UINT64, 1),
+        }
     }
 
     #[inline]
     fn lookup_canonical_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
+    where
+        Kmer<K>: KmerBits,
+    {
+        match self.lookup_canonical_located(kmer) {
+            Some(hit) => (hit.kmer_offset, hit.orientation),
+            None => (INVALID_UINT64, 1),
+        }
+    }
+
+    #[inline]
+    fn lookup_canonical_located<const K: usize>(&self, kmer: &Kmer<K>) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
@@ -267,9 +271,8 @@ impl Dictionary {
         } else if mini_rc.value < mini_fwd.value {
             self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_rc)
         } else {
-            let res = self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_fwd);
-            if res.0 != INVALID_UINT64 {
-                return res;
+            if let Some(hit) = self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_fwd) {
+                return Some(hit);
             }
             self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_rc)
         }
@@ -281,16 +284,13 @@ impl Dictionary {
         kmer: &Kmer<K>,
         kmer_rc: &Kmer<K>,
         minimizer_info: MinimizerInfo,
-    ) -> (u64, i8)
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
-        let bucket_id = match self.control_map.lookup(minimizer_info.value) {
-            Some(id) => id,
-            None => return (INVALID_UINT64, 1),
-        };
+        let bucket_id = self.control_map.lookup(minimizer_info.value)?;
         if bucket_id >= self.index.num_buckets() {
-            return (INVALID_UINT64, 1);
+            return None;
         }
 
         self.lookup_in_bucket_canonical::<K>(kmer, kmer_rc, minimizer_info, bucket_id)
@@ -310,14 +310,14 @@ impl Dictionary {
         kmer: &Kmer<K>,
         minimizer_info: MinimizerInfo,
         bucket_id: usize,
-    ) -> u64
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
         let (begin, end) = self.index.locate_bucket(bucket_id);
         let n = end - begin;
         if n == 0 {
-            return INVALID_UINT64;
+            return None;
         }
 
         let log2_size = ceil_log2(n as u64);
@@ -325,7 +325,7 @@ impl Dictionary {
             // Heavy bucket: use skew index
             let within_pos = self.index.skew_index.lookup(&kmer.bits(), log2_size);
             if within_pos == INVALID_UINT64 || within_pos as usize >= n {
-                return INVALID_UINT64;
+                return None;
             }
             let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
             self.lookup_from_minimizer_pos::<K>(kmer, minimizer_pos, minimizer_info)
@@ -343,14 +343,14 @@ impl Dictionary {
         kmer_rc: &Kmer<K>,
         minimizer_info: MinimizerInfo,
         bucket_id: usize,
-    ) -> (u64, i8)
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
         let (begin, end) = self.index.locate_bucket(bucket_id);
         let n = end - begin;
         if n == 0 {
-            return (INVALID_UINT64, 1);
+            return None;
         }
 
         let log2_size = ceil_log2(n as u64);
@@ -359,7 +359,7 @@ impl Dictionary {
             let kmer_canon_value = std::cmp::min(kmer.bits(), kmer_rc.bits());
             let within_pos = self.index.skew_index.lookup(&kmer_canon_value, log2_size);
             if within_pos == INVALID_UINT64 || within_pos as usize >= n {
-                return (INVALID_UINT64, 1);
+                return None;
             }
             let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
             self.lookup_from_minimizer_pos_canonical::<K>(kmer, kmer_rc, minimizer_pos, minimizer_info)
@@ -377,18 +377,17 @@ impl Dictionary {
         minimizer_info: MinimizerInfo,
         begin: usize,
         end: usize,
-    ) -> u64
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
         for i in begin..end {
             let minimizer_pos = self.index.offsets.index_value(i) as u64;
-            let pos = self.lookup_from_minimizer_pos::<K>(query_kmer, minimizer_pos, minimizer_info);
-            if pos != INVALID_UINT64 {
-                return pos;
+            if let Some(hit) = self.lookup_from_minimizer_pos::<K>(query_kmer, minimizer_pos, minimizer_info) {
+                return Some(hit);
             }
         }
-        INVALID_UINT64
+        None
     }
 
     /// Linear scan for canonical lookup (tries both fwd and RC pos_in_kmer).
@@ -400,20 +399,19 @@ impl Dictionary {
         minimizer_info: MinimizerInfo,
         begin: usize,
         end: usize,
-    ) -> (u64, i8)
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
         for i in begin..end {
             let minimizer_pos = self.index.offsets.index_value(i) as u64;
-            let (pos, ori) = self.lookup_from_minimizer_pos_canonical::<K>(
+            if let Some(hit) = self.lookup_from_minimizer_pos_canonical::<K>(
                 query_kmer, kmer_rc, minimizer_pos, minimizer_info,
-            );
-            if pos != INVALID_UINT64 {
-                return (pos, ori);
+            ) {
+                return Some(hit);
             }
         }
-        (INVALID_UINT64, 1)
+        None
     }
 
     // -----------------------------------------------------------------------
@@ -426,26 +424,22 @@ impl Dictionary {
         query_kmer: &Kmer<K>,
         minimizer_pos: u64,
         minimizer_info: MinimizerInfo,
-    ) -> u64
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
-        let kmer_pos = match minimizer_pos.checked_sub(minimizer_info.pos_in_kmer as u64) {
-            Some(pos) => pos,
-            None => return INVALID_UINT64,
-        };
+        let kmer_pos = minimizer_pos.checked_sub(minimizer_info.pos_in_kmer as u64)?;
 
         let stored_kmer = self.spss.decode_kmer_at::<K>(kmer_pos as usize);
 
         if stored_kmer.bits() == query_kmer.bits() {
-            if let Some((_sid, string_begin, string_end)) = self.spss.locate_with_end(kmer_pos) {
-                if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
-                    return kmer_pos;
-                }
+            let (string_id, string_begin, string_end) = self.spss.locate_with_end(kmer_pos)?;
+            if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
+                return Some(LocatedHit { kmer_offset: kmer_pos, orientation: 1, string_id, string_begin, string_end });
             }
         }
 
-        INVALID_UINT64
+        None
     }
 
     /// Canonical lookup from minimizer position
@@ -456,27 +450,23 @@ impl Dictionary {
         kmer_rc: &Kmer<K>,
         minimizer_pos: u64,
         minimizer_info: MinimizerInfo,
-    ) -> (u64, i8)
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
         // Try forward position first
         let pos_in_kmer_fwd = minimizer_info.pos_in_kmer as u64;
-        if let Some((pos, orientation)) = self.try_canonical_lookup_at_pos::<K>(
+        if let Some(hit) = self.try_canonical_lookup_at_pos::<K>(
             query_kmer, kmer_rc, minimizer_pos, pos_in_kmer_fwd
         ) {
-            return (pos, orientation);
+            return Some(hit);
         }
 
         // Try RC position (k - m - pos_in_kmer)
         let pos_in_kmer_rc = K as u64 - self.m() as u64 - minimizer_info.pos_in_kmer as u64;
-        if let Some((pos, orientation)) = self.try_canonical_lookup_at_pos::<K>(
+        self.try_canonical_lookup_at_pos::<K>(
             query_kmer, kmer_rc, minimizer_pos, pos_in_kmer_rc
-        ) {
-            return (pos, orientation);
-        }
-
-        (INVALID_UINT64, 1)
+        )
     }
 
     /// Try canonical lookup at a specific position with a given pos_in_kmer
@@ -487,7 +477,7 @@ impl Dictionary {
         kmer_rc: &Kmer<K>,
         minimizer_pos: u64,
         pos_in_kmer: u64,
-    ) -> Option<(u64, i8)>
+    ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
@@ -503,12 +493,12 @@ impl Dictionary {
             return None;
         };
 
-        if let Some((_sid, string_begin, string_end)) = self.spss.locate_with_end(kmer_pos) {
-            if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
-                return Some((kmer_pos, orientation));
-            }
+        let (string_id, string_begin, string_end) = self.spss.locate_with_end(kmer_pos)?;
+        if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
+            Some(LocatedHit { kmer_offset: kmer_pos, orientation, string_id, string_begin, string_end })
+        } else {
+            None
         }
-        None
     }
 
     /// Check if a k-mer exists in the dictionary
@@ -805,13 +795,10 @@ impl Dictionary {
             return res;
         }
 
-        let kmer_offset = self.lookup_in_bucket::<K>(kmer, mini_info, bucket_id);
-
-        if kmer_offset == INVALID_UINT64 {
-            return crate::streaming_query::LookupResult::not_found();
+        match self.lookup_in_bucket::<K>(kmer, mini_info, bucket_id) {
+            Some(hit) => hit.into_lookup_result(self.k),
+            None => crate::streaming_query::LookupResult::not_found(),
         }
-
-        self.build_lookup_result(kmer_offset, 1)
     }
 
     /// Canonical lookup with pre-computed minimizer, returning LookupResult.
@@ -839,47 +826,12 @@ impl Dictionary {
             return res;
         }
 
-        let (kmer_offset, orientation) = self.lookup_in_bucket_canonical::<K>(
-            kmer, kmer_rc, mini_info, bucket_id,
-        );
-
-        if kmer_offset == INVALID_UINT64 {
-            return crate::streaming_query::LookupResult::not_found();
-        }
-
-        self.build_lookup_result(kmer_offset, orientation)
-    }
-
-    /// Build a full LookupResult from a kmer_offset and orientation.
-    #[inline]
-    fn build_lookup_result(
-        &self,
-        kmer_offset: u64,
-        orientation: i8,
-    ) -> crate::streaming_query::LookupResult {
-        let (string_id, string_begin, string_end) = match self.spss.locate_with_end(kmer_offset) {
-            Some(triple) => triple,
-            None => return crate::streaming_query::LookupResult::not_found(),
-        };
-
-        if kmer_offset > string_end - self.k as u64 {
-            return crate::streaming_query::LookupResult::not_found();
-        }
-
-        let kmer_id_in_string = kmer_offset - string_begin;
-        let kmer_id = kmer_offset - string_id * (self.k as u64 - 1);
-
-        crate::streaming_query::LookupResult {
-            kmer_id,
-            kmer_id_in_string,
-            kmer_offset,
-            kmer_orientation: orientation,
-            string_id,
-            string_begin,
-            string_end,
-            minimizer_found: true,
+        match self.lookup_in_bucket_canonical::<K>(kmer, kmer_rc, mini_info, bucket_id) {
+            Some(hit) => hit.into_lookup_result(self.k),
+            None => crate::streaming_query::LookupResult::not_found(),
         }
     }
+
 }
 
 #[cfg(test)]
