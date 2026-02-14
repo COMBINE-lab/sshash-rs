@@ -144,7 +144,7 @@ Verified against the C++ reference implementation on:
 
 ## License
 
-MIT
+BSD 3-Clause
 
 ## References
 
