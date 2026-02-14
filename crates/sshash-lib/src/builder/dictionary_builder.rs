@@ -91,16 +91,27 @@ impl DictionaryBuilder {
         let (control_map, bucket_id_by_mphf_index) = self.build_control_map(&buckets)?;
         info!("  Built MPHF for {} minimizers", control_map.num_minimizers());
         
-        // Step 6: Build sparse and skew index
+        // Step 6: Reorder buckets to MPHF order, then build sparse and skew index.
+        // The EF + offsets layout requires buckets to be in MPHF order so that
+        // locate_bucket(mphf(minimizer)) returns the correct range.
         info!("Step 6: Building sparse and skew index...");
-        let mut index = self.build_index(buckets, &spss)?;
-        
-        // Step 6b: Reorder control_codewords from bucket order to MPHF order
-        // This eliminates the need for a controls array at query time,
-        // matching C++ architecture where mphf(minimizer) directly indexes control_codewords
-        if !bucket_id_by_mphf_index.is_empty() {
-            index.reorder_control_codewords_to_mphf_order(&bucket_id_by_mphf_index);
-        }
+        let reordered_buckets = if !bucket_id_by_mphf_index.is_empty() {
+            let mut buckets = buckets;
+            let n = buckets.len();
+            let mut reordered = Vec::with_capacity(n);
+            // Use a visited marker to avoid double-moves: swap each bucket
+            // into a temporary and push into reordered in MPHF order.
+            let mut taken: Vec<Option<crate::builder::buckets::Bucket>> =
+                buckets.drain(..).map(Some).collect();
+            for &bucket_idx in &bucket_id_by_mphf_index {
+                reordered.push(taken[bucket_idx].take()
+                    .expect("bucket_id_by_mphf_index contains duplicate index"));
+            }
+            reordered
+        } else {
+            buckets
+        };
+        let index = self.build_index(reordered_buckets, &spss)?;
         info!("  Index built successfully");
         
         // Step 7: Assemble dictionary
