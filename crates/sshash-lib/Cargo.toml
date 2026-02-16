@@ -19,7 +19,7 @@ ph = { workspace = true }
 needletail = { workspace = true }
 
 # Serialization
-epserde = "0.12"  # Must match sux's epserde version (sux 0.12 uses epserde 0.12)
+epserde = "0.12" # Must match sux's epserde version (sux 0.12 uses epserde 0.12)
 
 # Error handling
 anyhow = { workspace = true }
