@@ -124,8 +124,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "binout"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "222fb4925a15bea6a68075021910e03d6aa2d04951d71ff1d956190a551d738f"
+source = "git+https://github.com/COMBINE-lab/bsuccinct-rs.git?branch=main#647b73290fc9d872f947a4ed24f2cc71ea548822"
 
 [[package]]
 name = "bit-set"
@@ -151,10 +150,10 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 [[package]]
 name = "bitm"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31468ea4a856000d83cb61960dfdc2980ecd96b15b61321c8c76cc96aea6e688"
+source = "git+https://github.com/COMBINE-lab/bsuccinct-rs.git?branch=main#647b73290fc9d872f947a4ed24f2cc71ea548822"
 dependencies = [
  "dyn_size_of",
+ "prefetch-index",
 ]
 
 [[package]]
@@ -531,8 +530,7 @@ dependencies = [
 [[package]]
 name = "dyn_size_of"
 version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a742b95783b1f45b900129082cbc47717b6a77ee8d17eea70a8ea62462f5de3"
+source = "git+https://github.com/COMBINE-lab/bsuccinct-rs.git?branch=main#647b73290fc9d872f947a4ed24f2cc71ea548822"
 
 [[package]]
 name = "either"
@@ -1182,8 +1180,7 @@ checksum = "947f833aaa585cf12b8ec7c0476c98784c49f33b861376ffc84ed92adebf2aba"
 [[package]]
 name = "ph"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a447f203c7254ebb06aa4f111480e821debb361e80fb4d760554a8460f236550"
+source = "git+https://github.com/COMBINE-lab/bsuccinct-rs.git?branch=main#647b73290fc9d872f947a4ed24f2cc71ea548822"
 dependencies = [
  "arrayvec",
  "binout",
@@ -1267,6 +1264,12 @@ checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
 ]
+
+[[package]]
+name = "prefetch-index"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebb824f21ee853524f9f04d24a8d2127de8a371ece8777ce848be7b49ccfd49f"
 
 [[package]]
 name = "prettyplease"
@@ -1536,8 +1539,7 @@ dependencies = [
 [[package]]
 name = "seedable_hash"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba2a159211665e29bbf5a2fbb42da50dd6eadff23eef7a6a7ae4a9b0a7cd0152"
+source = "git+https://github.com/COMBINE-lab/bsuccinct-rs.git?branch=main#647b73290fc9d872f947a4ed24f2cc71ea548822"
 dependencies = [
  "rapidhash 1.4.0",
 ]

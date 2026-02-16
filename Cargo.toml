@@ -19,8 +19,8 @@ sshash-lib = { version = "0.2.0", path = "crates/sshash-lib" }
 # Succinct data structures (git main for bidirectional EF iterator support)
 sux = { version = "0.12", features = ["epserde"] }
 
-# Minimal perfect hashing (dev branch for PHast serialization support)
-ph = { version = "0.11", default-features = false, features = ["rapidhash"] }
+# Minimal perfect hashing (COMBINE-lab fork: usize::MAX instead of panic for out-of-set keys)
+ph = { git = "https://github.com/COMBINE-lab/bsuccinct-rs.git", branch = "main", default-features = false, features = ["rapidhash"] }
 
 # FASTA/FASTQ parsing
 needletail = "0.6"

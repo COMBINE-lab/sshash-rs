@@ -126,30 +126,20 @@ impl PartitionedMphf {
     /// Look up a key and return its global index in [0, num_keys).
     ///
     /// For keys NOT in the build set, returns `num_keys` (out-of-range sentinel).
-    /// PHast's `Function::get()` panics with `unreachable!()` when a key exhausts
-    /// all levels without matching — this is more likely with smaller per-partition
-    /// MPHFs than with the monolithic case.
+    /// The COMBINE-lab ph fork returns `usize::MAX` for keys that exhaust all
+    /// levels without matching, which we map to `num_keys`.
     #[inline]
     pub fn get<K: Hash + ?Sized>(&self, key: &K) -> usize {
         if self.num_partitions == 1 {
             // Fast path: skip partition hash entirely.
-            // Single large MPHF almost never panics for false-positive keys
-            // (more levels → extremely unlikely to exhaust all), but wrap for safety.
-            return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.inners[0].get(key)
-            })) {
-                Ok(idx) => idx,
-                Err(_) => self.num_keys,
-            };
+            let idx = self.inners[0].get(key);
+            if idx == usize::MAX { return self.num_keys; }
+            return idx;
         }
         let p = self.partition_for(key);
-        // Smaller per-partition MPHFs can panic for keys not in their build set.
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.inners[p].get(key)
-        })) {
-            Ok(idx) => self.offsets[p] + idx,
-            Err(_) => self.num_keys,
-        }
+        let idx = self.inners[p].get(key);
+        if idx == usize::MAX { return self.num_keys; }
+        self.offsets[p] + idx
     }
 
     /// Total number of keys.
