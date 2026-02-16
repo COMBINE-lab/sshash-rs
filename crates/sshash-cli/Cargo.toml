@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core library
-sshash-lib = { workspace = true }
+sshash-lib = { version = "0.1.0", workspace = true }
 
 # CLI
 clap = { workspace = true }
