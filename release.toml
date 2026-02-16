@@ -1,14 +1,8 @@
-[workspace]
 allow-branch = ["main", "master"]
 consolidate-commits = true
 
 # Publish packages one at a time
 publish = false
 
-[[package]]
-name = "sshash-lib"
-
-[[package]]
-name = "sshash"
 # Make sure sshash depends on sshash-lib being published first
 dependent-version = "upgrade"
