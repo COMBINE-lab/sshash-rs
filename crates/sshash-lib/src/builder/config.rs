@@ -31,6 +31,9 @@ pub struct BuildConfiguration {
     /// Build in canonical mode (k-mer and reverse-complement map to same entry)
     pub canonical: bool,
     
+    /// Use partitioned MPHF for parallel construction (default: true)
+    pub partitioned_mphf: bool,
+
     /// Build weighted dictionary (with k-mer abundance/weights)
     pub weighted: bool,
     
@@ -51,6 +54,7 @@ impl Default for BuildConfiguration {
             ram_limit_gib: 8,
             lambda: 6.0,  // C++ default
             canonical: false,
+            partitioned_mphf: true,
             weighted: false,
             verbose: true,
             tmp_dirname: PathBuf::from("sshash_tmp"),

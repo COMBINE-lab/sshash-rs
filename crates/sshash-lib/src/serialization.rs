@@ -52,13 +52,13 @@ use std::path::{Path, PathBuf};
 /// Magic bytes for the SSHash index format
 const MAGIC: &[u8; 8] = b"SSHIDX01";
 
-/// Magic bytes for the SSHash MPHF container format
-const MPHF_MAGIC: &[u8; 8] = b"SSHIMH01";
+/// Magic bytes for the SSHash MPHF container format (v2: PartitionedMphf)
+const MPHF_MAGIC: &[u8; 8] = b"SSHIMH02";
 
 /// File format version: (major, minor)
 /// Increment major on breaking changes, minor on compatible changes
 const FORMAT_VERSION: (u32, u32) = (3, 0);
-const MPHF_FORMAT_VERSION: (u32, u32) = (1, 0);
+const MPHF_FORMAT_VERSION: (u32, u32) = (2, 0);
 
 /// Header for the serialized Dictionary
 #[derive(Clone, Debug)]
@@ -240,6 +240,13 @@ impl MphfContainerHeader {
         reader.read_exact(&mut magic)?;
 
         if &magic != MPHF_MAGIC {
+            // Check for old v1 format
+            if &magic == b"SSHIMH01" {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MPHF container is v1 format (SSHIMH01). Please rebuild the index — v2 (PartitionedMphf) is required.",
+                ));
+            }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Invalid magic number for SSHash MPHF container file",
@@ -343,7 +350,7 @@ pub type SerializationResult<T> = Result<T, SerializationError>;
 /// Returns the offset table for reference
 pub fn write_mphf_container<W: Write + Seek>(
     writer: &mut W,
-    mphfs: &[Option<&crate::mphf_config::Mphf>],
+    mphfs: &[Option<&crate::partitioned_mphf::PartitionedMphf>],
 ) -> io::Result<Vec<MphfPartitionEntry>> {
     let num_partitions = mphfs.len() as u32;
 
@@ -367,17 +374,17 @@ pub fn write_mphf_container<W: Write + Seek>(
 
     let _data_start = writer.stream_position()?;
 
-    // Serialize MPHFs and track their positions
+    // Serialize PartitionedMphfs and track their positions
     for (partition_id, mphf_opt) in mphfs.iter().enumerate() {
         let byte_offset = writer.stream_position()?;
 
-        if let Some(mphf) = mphf_opt {
-            // Serialize the MPHF to a temporary buffer to get the size
+        if let Some(pmphf) = mphf_opt {
+            // Serialize the PartitionedMphf to a temporary buffer to get the size
             let mut mphf_buffer = Vec::new();
-            mphf.write(&mut mphf_buffer)?;
+            pmphf.write_to(&mut mphf_buffer)?;
             let byte_size = mphf_buffer.len() as u64;
 
-            // Write the serialized MPHF
+            // Write the serialized PartitionedMphf
             writer.write_all(&mphf_buffer)?;
 
             // Record the entry
@@ -408,12 +415,12 @@ pub fn write_mphf_container<W: Write + Seek>(
     Ok(offset_table)
 }
 
-/// Read MPHFs from a container format
+/// Read PartitionedMphfs from a container format
 ///
-/// Returns a vector of Option<Mphf> indexed by partition ID
+/// Returns a vector of Option<PartitionedMphf> indexed by partition ID
 pub fn read_mphf_container<R: Read + Seek>(
     reader: &mut R,
-) -> io::Result<Vec<Option<crate::mphf_config::Mphf>>> {
+) -> io::Result<Vec<Option<crate::partitioned_mphf::PartitionedMphf>>> {
     // Read header
     let header = MphfContainerHeader::read(reader)?;
 
@@ -423,14 +430,15 @@ pub fn read_mphf_container<R: Read + Seek>(
         offset_table.push(MphfPartitionEntry::read(reader)?);
     }
 
-    // Read MPHFs
-    let mut mphfs: Vec<Option<crate::mphf_config::Mphf>> = (0..header.num_partitions).map(|_| None).collect();
+    // Read PartitionedMphfs
+    let mut mphfs: Vec<Option<crate::partitioned_mphf::PartitionedMphf>> =
+        (0..header.num_partitions).map(|_| None).collect();
 
     for entry in offset_table {
         if entry.byte_size > 0 {
             reader.seek(SeekFrom::Start(entry.byte_offset))?;
-            let mphf = crate::mphf_config::read_mphf(reader)?;
-            mphfs[entry.partition_id as usize] = Some(mphf);
+            let pmphf = crate::partitioned_mphf::PartitionedMphf::read_from(reader)?;
+            mphfs[entry.partition_id as usize] = Some(pmphf);
         }
     }
 

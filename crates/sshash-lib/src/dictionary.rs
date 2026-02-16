@@ -677,7 +677,7 @@ impl Dictionary {
         let mut mphf_writer = BufWriter::new(mphf_file);
 
         // Write MPHF container (control_map first, then skew_index partitions)
-        let mut mphfs: Vec<Option<&crate::mphf_config::Mphf>> = Vec::with_capacity(
+        let mut mphfs: Vec<Option<&crate::partitioned_mphf::PartitionedMphf>> = Vec::with_capacity(
             self.index.skew_index.num_partitions() + 1,
         );
         mphfs.push(self.control_map.mphf_ref());

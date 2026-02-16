@@ -203,8 +203,8 @@ impl DictionaryBuilder {
         // Note: C++ lambda controls PTHash partition size and is unrelated to fmph's level size
         let c = 100u16;
         let alpha = 0.94; // Load factor (not used by ph, but kept for API compatibility)
-        
-        builder.build(c, alpha).map_err(|e| {
+
+        builder.build(c, alpha, self.config.partitioned_mphf).map_err(|e| {
             format!("Failed to build minimizers control map: {}", e)
         })
     }

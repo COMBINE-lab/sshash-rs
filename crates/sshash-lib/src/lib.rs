@@ -15,6 +15,7 @@ pub mod mphf_config;
 pub mod offsets;
 pub mod minimizers_control_map;
 pub mod spectrum_preserving_string_set;
+pub mod partitioned_mphf;
 pub mod sparse_and_skew_index;
 pub mod streaming_query;
 pub mod dictionary;
@@ -28,6 +29,7 @@ pub use minimizers_control_map::{MinimizersControlMap, MinimizersControlMapBuild
 pub use streaming_query::{LookupResult, StreamingQuery};
 pub use dictionary::Dictionary;
 pub use builder::{BuildConfiguration, CfSegData, DictionaryBuilder, parse_cf_seg};
+pub use partitioned_mphf::PartitionedMphf;
 
 /// Dispatch to the correct const generic `K` based on a runtime `k` value.
 ///

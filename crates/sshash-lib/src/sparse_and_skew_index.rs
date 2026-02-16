@@ -17,7 +17,7 @@
 use crate::builder::buckets::{Bucket, MIN_BUCKET_SIZE};
 use crate::constants::{ceil_log2, MIN_L, MAX_L, INVALID_UINT64};
 use crate::kmer::{Kmer, KmerBits};
-use crate::mphf_config::{Mphf, build_mphf_from_slice_mt};
+use crate::partitioned_mphf::PartitionedMphf;
 use crate::offsets::EliasFanoOffsets;
 use std::hash::Hash;
 use sux::bits::bit_field_vec::BitFieldVec;
@@ -281,7 +281,7 @@ impl Default for SparseAndSkewIndex {
 pub struct SkewIndex {
     /// Vector of MPHFs, one per partition
     /// Each MPHF maps k-mers to positions within the partition
-    pub mphfs: Vec<Option<Mphf>>,
+    pub mphfs: Vec<Option<PartitionedMphf>>,
 
     /// Vector of position arrays, one per partition.
     /// `positions[i]` stores the within-bucket super-kmer index for each k-mer.
@@ -559,7 +559,7 @@ impl SkewIndex {
     pub fn mphf_bytes(&self) -> usize {
         self.mphfs.iter()
             .filter_map(|opt| opt.as_ref())
-            .map(|mphf| mphf.write_bytes())
+            .map(|pmphf| pmphf.write_bytes())
             .sum()
     }
 
@@ -577,28 +577,29 @@ impl SkewIndex {
     }
 
     /// Get a reference to the MPHFs vector
-    pub fn mphfs_ref(&self) -> &[Option<Mphf>] {
+    pub fn mphfs_ref(&self) -> &[Option<PartitionedMphf>] {
         &self.mphfs
     }
 
     /// Set the MPHFs vector (used during deserialization)
-    pub fn set_mphfs(&mut self, mphfs: Vec<Option<Mphf>>) {
+    pub fn set_mphfs(&mut self, mphfs: Vec<Option<PartitionedMphf>>) {
         self.mphfs = mphfs;
     }
 }
 
-/// Build an MPHF for a partition's k-mers.
+/// Build a PartitionedMphf for a skew index partition's k-mers.
 ///
 /// Generic over the key type (`u64` for K <= 31, `u128` for K > 31).
-/// Uses multi-threaded PHast construction via the current rayon pool.
-fn build_partition_mphf<T: Hash + Clone + Sync + Send>(kmers: &[T]) -> Option<Mphf> {
+/// Skew index partitions are typically small enough that a single (non-partitioned)
+/// MPHF is used — partitioning is only relevant for the main minimizer MPHF.
+fn build_partition_mphf<T: Hash + Clone + Sync + Send>(kmers: &[T]) -> Option<PartitionedMphf> {
     if kmers.is_empty() {
         return None;
     }
 
-    // Use all threads in the current rayon pool for MPHF construction
-    let threads = rayon::current_num_threads();
-    Some(build_mphf_from_slice_mt(kmers, threads))
+    // Skew index MPHFs are always monolithic (single partition) since they cover
+    // a single size-class bucket, not the full minimizer set.
+    Some(PartitionedMphf::build_from_slice(kmers, false))
 }
 
 impl Default for SkewIndex {

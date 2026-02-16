@@ -5,7 +5,7 @@
 
 use rapidhash::HashMapExt;
 
-use crate::mphf_config::{Mphf, build_mphf_from_vec};
+use crate::partitioned_mphf::PartitionedMphf;
 use std::io;
 use tracing::info;
 
@@ -115,7 +115,8 @@ impl MinimizersControlMapBuilder {
     /// # Arguments
     /// * `c` - Relative level size (percentage, typically 100)
     /// * `alpha` - Load factor (kept for C++ API parity, not used by ph)
-    pub fn build(self, _c: u16, _alpha: f64) -> io::Result<(MinimizersControlMap, Vec<usize>)> {
+    /// * `partitioned` - Whether to use partitioned MPHF (parallel build)
+    pub fn build(self, _c: u16, _alpha: f64, partitioned: bool) -> io::Result<(MinimizersControlMap, Vec<usize>)> {
         if self.minimizers.is_empty() {
             return Ok((MinimizersControlMap {
                 mphf: None,
@@ -127,10 +128,10 @@ impl MinimizersControlMapBuilder {
         let controls = self.controls;
         let num_keys = minimizers.len() as u64;
 
-        info!("Building PHast MPHF for {} minimizers", num_keys);
+        info!("Building PHast MPHF for {} minimizers (partitioned={})", num_keys, partitioned);
 
-        // Build the MPHF using PHast
-        let mphf = build_mphf_from_vec(minimizers.clone());
+        // Build the MPHF using PartitionedMphf
+        let mphf = PartitionedMphf::build_from_vec(minimizers.clone(), partitioned);
 
         // Build mapping: bucket_id_by_mphf_index[mphf_index] = bucket_id (= metadata)
         let mut bucket_id_by_mphf_index = vec![0usize; controls.len()];
@@ -165,8 +166,8 @@ impl Default for MinimizersControlMapBuilder {
 /// a minimal perfect hash function for O(1) lookups.
 /// After reordering, the MPHF index IS the index into control_codewords.
 pub struct MinimizersControlMap {
-    /// MPHF for minimizer lookup (PHast)
-    mphf: Option<Mphf>,
+    /// MPHF for minimizer lookup (partitioned PHast)
+    mphf: Option<PartitionedMphf>,
     /// Number of keys in the MPHF
     num_keys: u64,
 }
@@ -180,11 +181,11 @@ impl MinimizersControlMap {
     ) -> Self {
         // Build MPHF if we have minimizers
         let mphf = if !minimizers.is_empty() {
-            Some(build_mphf_from_vec(minimizers))
+            Some(PartitionedMphf::build_from_vec(minimizers, false))
         } else {
             None
         };
-        
+
         Self {
             mphf,
             num_keys,
@@ -209,12 +210,12 @@ impl MinimizersControlMap {
     }
 
     /// Get a reference to the MPHF (for serialization)
-    pub fn mphf_ref(&self) -> Option<&Mphf> {
+    pub fn mphf_ref(&self) -> Option<&PartitionedMphf> {
         self.mphf.as_ref()
     }
 
     /// Set the MPHF (for deserialization)
-    pub fn set_mphf(&mut self, mphf: Option<Mphf>) {
+    pub fn set_mphf(&mut self, mphf: Option<PartitionedMphf>) {
         self.mphf = mphf;
     }
 
@@ -238,7 +239,7 @@ impl MinimizersControlMap {
     /// Exact serialized byte size of the main MPHF
     pub fn mphf_serialized_bytes(&self) -> usize {
         match &self.mphf {
-            Some(mphf) => mphf.write_bytes(),
+            Some(pmphf) => pmphf.write_bytes(),
             None => 0,
         }
     }
@@ -344,7 +345,7 @@ mod tests {
     #[test]
     fn test_minimizers_control_map_build_empty() {
         let builder = MinimizersControlMapBuilder::new();
-        let (mcm, mapping) = builder.build(100, 0.94).unwrap();
+        let (mcm, mapping) = builder.build(100, 0.94, false).unwrap();
         
         assert_eq!(mcm.num_minimizers(), 0);
         assert!(mcm.mphf.is_none());
@@ -360,7 +361,7 @@ mod tests {
         builder.increment_count(200);
         builder.set_bucket_type(100, BucketType::Sparse);
         
-        let (mcm, _mapping) = builder.build(100, 0.94).unwrap();
+        let (mcm, _mapping) = builder.build(100, 0.94, false).unwrap();
         
         assert_eq!(mcm.num_minimizers(), 2);
         
@@ -378,7 +379,7 @@ mod tests {
         let mut builder = MinimizersControlMapBuilder::new();
         builder.increment_count(100);
         
-        let (mcm, _) = builder.build(100, 0.94).unwrap();
+        let (mcm, _) = builder.build(100, 0.94, false).unwrap();
         
         // 300 was never added
         let _result = mcm.lookup(300);
