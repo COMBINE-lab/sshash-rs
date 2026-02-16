@@ -131,7 +131,6 @@ crates/
 |-------|---------|
 | [`ph`](https://github.com/beling/bsuccinct-rs) | PHast minimal perfect hash functions |
 | [`sux`](https://crates.io/crates/sux) | `BitFieldVec` compact bitvectors |
-| [`cseq`](https://crates.io/crates/cseq) | Elias-Fano monotone sequences (string offsets) |
 | [`needletail`](https://crates.io/crates/needletail) | FASTA/FASTQ parsing |
 | [`rayon`](https://crates.io/crates/rayon) | Parallel sorting during build |
 
