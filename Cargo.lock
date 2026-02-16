@@ -137,7 +137,8 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "binout"
 version = "0.3.1"
-source = "git+https://github.com/beling/bsuccinct-rs#74d9b3d741074ed0745ea3ed779e6ff4c69da132"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "222fb4925a15bea6a68075021910e03d6aa2d04951d71ff1d956190a551d738f"
 
 [[package]]
 name = "bit-set"
@@ -163,10 +164,10 @@ checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 [[package]]
 name = "bitm"
 version = "0.5.2"
-source = "git+https://github.com/beling/bsuccinct-rs#74d9b3d741074ed0745ea3ed779e6ff4c69da132"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31468ea4a856000d83cb61960dfdc2980ecd96b15b61321c8c76cc96aea6e688"
 dependencies = [
  "dyn_size_of",
- "prefetch-index",
 ]
 
 [[package]]
@@ -543,7 +544,8 @@ dependencies = [
 [[package]]
 name = "dyn_size_of"
 version = "0.4.5"
-source = "git+https://github.com/beling/bsuccinct-rs#74d9b3d741074ed0745ea3ed779e6ff4c69da132"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a742b95783b1f45b900129082cbc47717b6a77ee8d17eea70a8ea62462f5de3"
 
 [[package]]
 name = "either"
@@ -1192,8 +1194,9 @@ checksum = "947f833aaa585cf12b8ec7c0476c98784c49f33b861376ffc84ed92adebf2aba"
 
 [[package]]
 name = "ph"
-version = "0.10.0"
-source = "git+https://github.com/beling/bsuccinct-rs#74d9b3d741074ed0745ea3ed779e6ff4c69da132"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a447f203c7254ebb06aa4f111480e821debb361e80fb4d760554a8460f236550"
 dependencies = [
  "arrayvec",
  "binout",
@@ -1277,12 +1280,6 @@ checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
 ]
-
-[[package]]
-name = "prefetch-index"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebb824f21ee853524f9f04d24a8d2127de8a371ece8777ce848be7b49ccfd49f"
 
 [[package]]
 name = "prettyplease"
@@ -1536,8 +1533,9 @@ dependencies = [
 
 [[package]]
 name = "seedable_hash"
-version = "0.2.2"
-source = "git+https://github.com/beling/bsuccinct-rs#74d9b3d741074ed0745ea3ed779e6ff4c69da132"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba2a159211665e29bbf5a2fbb42da50dd6eadff23eef7a6a7ae4a9b0a7cd0152"
 
 [[package]]
 name = "semver"
@@ -1671,7 +1669,8 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "sux"
 version = "0.12.0"
-source = "git+https://github.com/vigna/sux-rs#54d27beb22f3b97b57ecd895f41db326a2d67303"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc2d01750644c287d040c96e6a041a5d5689742b7b221182199e409d7d1bdeab"
 dependencies = [
  "ambassador",
  "anyhow",
