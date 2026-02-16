@@ -3,6 +3,8 @@
 //! Maps minimizer values to their control information using a minimal perfect hash function.
 //! This provides O(1) lookup of metadata associated with each unique minimizer.
 
+use rapidhash::HashMapExt;
+
 use crate::mphf_config::{Mphf, build_mphf_from_vec};
 use std::io;
 use tracing::info;
@@ -42,7 +44,7 @@ pub struct MinimizersControlMapBuilder {
     /// Control information for each minimizer (parallel to minimizers vec)
     controls: Vec<MinimizerControl>,
     /// O(1) lookup: minimizer value → index in minimizers/controls vecs
-    index: ahash::AHashMap<u64, usize>,
+    index: rapidhash::RapidHashMap<u64, usize>,
 }
 
 impl MinimizersControlMapBuilder {
@@ -51,7 +53,7 @@ impl MinimizersControlMapBuilder {
         Self {
             minimizers: Vec::new(),
             controls: Vec::new(),
-            index: ahash::AHashMap::new(),
+            index: rapidhash::RapidHashMap::new(),
         }
     }
 

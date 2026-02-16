@@ -1,12 +1,15 @@
 //! MPHF (Minimal Perfect Hash Function) type configuration
 //!
 //! Central module for MPHF type aliases and helpers used across the crate.
-//! We use PHast (Perfect Hashing made fast) with ahash instead of the default
+//! We use PHast (Perfect Hashing made fast) with rapidhash instead of the default
 //! SipHash hasher for faster hash evaluations during both construction and query.
+//!
+//! rapidhash is CPU-feature independent (unlike ahash which switches algorithm
+//! when AES-NI is available via target-cpu=native, breaking serialized indices).
 //!
 //! PHast offers very fast evaluation and size below 2 bits/key.
 
-use ph::Seedable;
+use ph::seedable_hash::BuildRapidHash;
 use ph::phast;
 use ph::seeds::Bits8;
 use std::hash::Hash;
@@ -14,26 +17,26 @@ use std::io;
 
 /// The seeded hasher used inside our MPHF functions.
 ///
-/// Uses ahash with deterministic (fixed) seeds, which is significantly faster
-/// than the default SipHash used by the `ph` crate. The fixed seeds ensure
-/// deterministic behavior required for serialization round-trips.
-pub type MphfHasher = Seedable<ahash::RandomState>;
+/// Uses rapidhash via the `ph` crate's `BuildRapidHash` adapter, which is
+/// CPU-feature independent (no AES-NI divergence). This ensures indices built
+/// with or without `target-cpu=native` produce the same MPHF evaluations.
+pub type MphfHasher = BuildRapidHash;
 
-/// Our MPHF type — PHast with ahash instead of default SipHash.
+/// Our MPHF type — PHast with rapidhash instead of default SipHash.
 ///
 /// Type parameters:
 /// - `Bits8`: 8 bits per seed (default, recommended)
 /// - `phast::SeedOnly`: Regular PHast variant (not PHast+)
 /// - `phast::DefaultCompressedArray`: Default compressed array implementation
-/// - `MphfHasher`: ahash-based seeded hasher (faster than default SipHash)
+/// - `MphfHasher`: rapidhash-based seeded hasher (faster than default SipHash)
 pub type Mphf = phast::Function<Bits8, phast::SeedOnly, phast::DefaultCompressedArray, MphfHasher>;
 
 /// Create the deterministic MPHF hasher.
 ///
-/// Must use the same fixed seeds at both build and load time to ensure
+/// Must use the same hasher at both build and load time to ensure
 /// the serialized MPHF produces correct results after deserialization.
 pub fn mphf_hasher() -> MphfHasher {
-    Seedable(ahash::RandomState::with_seeds(0, 0, 0, 0))
+    BuildRapidHash
 }
 
 /// Create PHast parameters with default settings (Bits8, optimal bucket size).
@@ -67,7 +70,7 @@ pub fn build_mphf_from_slice_mt<T: Hash + Sync + Send + Clone>(keys: &[T], threa
 
 /// Read (deserialize) an MPHF from a reader.
 ///
-/// Uses the same deterministic ahash hasher and SeedOnly chooser
+/// Uses the same deterministic rapidhash hasher and SeedOnly chooser
 /// as used during construction, ensuring correct round-trip behavior.
 pub fn read_mphf(reader: &mut dyn io::Read) -> io::Result<Mphf> {
     Mphf::read_with_hasher_sc(reader, mphf_hasher(), phast::SeedOnly)

@@ -20,7 +20,7 @@ sshash-lib = { version = "0.1.0", path = "crates/sshash-lib" }
 sux = { version = "0.12", features = ["epserde"] }
 
 # Minimal perfect hashing (dev branch for PHast serialization support)
-ph = { version = "0.11", default-features = false }
+ph = { version = "0.11", default-features = false, features = ["rapidhash"] }
 
 # FASTA/FASTQ parsing
 needletail = "0.6"

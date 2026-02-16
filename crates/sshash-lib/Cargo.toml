@@ -34,8 +34,8 @@ rayon = { workspace = true }
 # Utilities for const generic generation
 seq-macro = { workspace = true }
 
-# Fast hashing with deterministic seeding
-ahash = "0.8"
+# Fast, portable hashing (CPU-feature independent — no AES-NI divergence unlike ahash)
+rapidhash = "4"
 
 # Value-based slice traits (used by sux 0.11 BitFieldVec)
 value-traits = "0.2"
