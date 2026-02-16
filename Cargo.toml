@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/sshash-lib", "crates/sshash-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["SSHash Contributors"]
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "data-structures"]
 
 [workspace.dependencies]
 # Core library
-sshash-lib = { version = "0.1.0", path = "crates/sshash-lib" }
+sshash-lib = { version = "0.2.0", path = "crates/sshash-lib" }
 
 # Succinct data structures (git main for bidirectional EF iterator support)
 sux = { version = "0.12", features = ["epserde"] }
