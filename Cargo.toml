@@ -20,7 +20,8 @@ sshash-lib = { version = "0.2.0", path = "crates/sshash-lib" }
 sux = { version = "0.12", features = ["epserde"] }
 
 # Minimal perfect hashing (COMBINE-lab fork: usize::MAX instead of panic for out-of-set keys)
-ph = { git = "https://github.com/COMBINE-lab/bsuccinct-rs.git", branch = "main", default-features = false, features = ["rapidhash"] }
+#ph = { git = "https://github.com/COMBINE-lab/bsuccinct-rs.git", branch = "main", default-features = false, features = ["rapidhash"] }
+ph = { package = "ph-temp", version = "0.12.0" }
 
 # FASTA/FASTQ parsing
 needletail = "0.6"
