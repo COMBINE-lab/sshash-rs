@@ -1,0 +1,13 @@
+[package]
+name = "sshash-py"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings for the sshash k-mer dictionary"
+
+[lib]
+name = "sshash"
+crate-type = ["cdylib"]
+
+[dependencies]
+sshash-lib = { path = "../sshash-lib" }
+pyo3 = { version = "0.28.2", features = ["extension-module"] }
