@@ -1,0 +1,57 @@
+name: Publish sshash Python package
+
+on:
+  push:
+    tags: ["sshash-py-v[0-9]*"]
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+            sdist: true
+          - os: ubuntu-latest
+            target: aarch64
+            sdist: false
+          - os: macos-latest
+            target: universal2-apple-darwin
+            sdist: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          manifest-path: crates/sshash-py/Cargo.toml
+          args: >-
+            --release
+            --out dist
+            ${{ matrix.sdist && '--sdist' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/sshash/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

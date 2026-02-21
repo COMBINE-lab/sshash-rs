@@ -15,6 +15,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
+[project.urls]
+Repository = "https://github.com/COMBINE-lab/sshash-rs"
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "sshash"
