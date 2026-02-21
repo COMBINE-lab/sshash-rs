@@ -5,8 +5,10 @@
 //! - `StreamingQuery` — sliding-window queries over DNA sequences
 //! - `Hit` — result of a successful k-mer lookup
 
-use pyo3::exceptions::{PyIOError, PyValueError};
+use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use sshash_lib::builder::{parse_cf_seg, BuildConfiguration, DictionaryBuilder};
+use sshash_lib::builder::parse::parse_sequences;
 use sshash_lib::{dispatch_on_k, Dictionary, Kmer, KmerBits, LookupResult, StreamingQuery};
 use std::sync::Arc;
 
@@ -399,6 +401,170 @@ impl SequenceIterator {
     }
 }
 
+// ─── PyBuildConfig ────────────────────────────────────────────────────────────
+
+/// Configuration for building an sshash index.
+///
+/// Create with ``BuildConfig(k, m)``, adjust optional fields, then call one of
+/// the build methods to get a :class:`Dictionary`.
+///
+/// Example::
+///
+///     config = sshash.BuildConfig(k=31, m=19)
+///     config.canonical = True
+///     config.threads = 8
+///     dict = config.build(["ACGTACGT...", "TTGCAACCG..."])
+#[pyclass(name = "BuildConfig")]
+struct PyBuildConfig {
+    config: BuildConfiguration,
+}
+
+#[pymethods]
+impl PyBuildConfig {
+    /// Create a new build configuration.
+    ///
+    /// :param k: K-mer length (must be odd, 3 ≤ k ≤ 63).
+    /// :param m: Minimizer length (must be odd, m < k).
+    /// :raises ValueError: If k or m are out of range.
+    #[new]
+    fn new(k: usize, m: usize) -> PyResult<Self> {
+        let config = BuildConfiguration::new(k, m)
+            .map_err(PyValueError::new_err)?;
+        Ok(PyBuildConfig { config })
+    }
+
+    /// K-mer length (set at construction time).
+    #[getter]
+    fn k(&self) -> usize { self.config.k }
+
+    /// Minimizer length (set at construction time).
+    #[getter]
+    fn m(&self) -> usize { self.config.m }
+
+    /// Whether to build in canonical mode (k-mer and its reverse complement map to the same entry).
+    #[getter]
+    fn canonical(&self) -> bool { self.config.canonical }
+
+    #[setter(canonical)]
+    fn set_canonical(&mut self, val: bool) { self.config.canonical = val; }
+
+    /// Number of threads (0 = all available cores).
+    #[getter]
+    fn threads(&self) -> usize { self.config.num_threads }
+
+    #[setter(threads)]
+    fn set_threads(&mut self, val: usize) { self.config.num_threads = val; }
+
+    /// RAM limit in GiB for external sorting of minimizer tuples.
+    #[getter]
+    fn ram_limit_gib(&self) -> usize { self.config.ram_limit_gib }
+
+    #[setter(ram_limit_gib)]
+    fn set_ram_limit_gib(&mut self, val: usize) { self.config.ram_limit_gib = val; }
+
+    /// Seed for internal hash functions.
+    #[getter]
+    fn seed(&self) -> u64 { self.config.seed }
+
+    #[setter(seed)]
+    fn set_seed(&mut self, val: u64) { self.config.seed = val; }
+
+    /// Whether to print verbose progress messages during building.
+    #[getter]
+    fn verbose(&self) -> bool { self.config.verbose }
+
+    #[setter(verbose)]
+    fn set_verbose(&mut self, val: bool) { self.config.verbose = val; }
+
+    /// Temporary directory used during external sorting.
+    #[getter]
+    fn tmp_dir(&self) -> String {
+        self.config.tmp_dirname.to_string_lossy().into_owned()
+    }
+
+    #[setter(tmp_dir)]
+    fn set_tmp_dir(&mut self, val: &str) {
+        self.config.tmp_dirname = val.into();
+    }
+
+    /// Build an index from a list of in-memory DNA sequences.
+    ///
+    /// The GIL is released for the duration of the build.
+    ///
+    /// :param sequences: List of DNA strings (only A/C/G/T characters).
+    /// :returns: A ready-to-query :class:`Dictionary`.
+    /// :raises RuntimeError: If the build fails.
+    fn build(&self, py: Python<'_>, sequences: Vec<String>) -> PyResult<PyDictionary> {
+        let config = self.config.clone();
+        let dict = py.detach(|| {
+            DictionaryBuilder::new(config)
+                .and_then(|b| b.build_from_sequences(sequences))
+        }).map_err(PyRuntimeError::new_err)?;
+        Ok(PyDictionary { inner: make_dyn_dict(dict) })
+    }
+
+    /// Build an index from a FASTA or FASTQ file (plain or gzip-compressed).
+    ///
+    /// The GIL is released for the duration of parsing and building.
+    ///
+    /// :param path: Path to the input file.
+    /// :returns: A ready-to-query :class:`Dictionary`.
+    /// :raises RuntimeError: If the file cannot be read or the build fails.
+    fn build_from_file(&self, py: Python<'_>, path: &str) -> PyResult<PyDictionary> {
+        let config = self.config.clone();
+        let path = path.to_string();
+        let dict = py.detach(|| -> Result<Dictionary, String> {
+            let mut sequences: Vec<String> = Vec::new();
+            parse_sequences(&path, |_name, seq| {
+                sequences.push(String::from_utf8_lossy(seq).into_owned());
+                Ok(())
+            }).map_err(|e| e.to_string())?;
+            DictionaryBuilder::new(config)?.build_from_sequences(sequences)
+        }).map_err(PyRuntimeError::new_err)?;
+        Ok(PyDictionary { inner: make_dyn_dict(dict) })
+    }
+
+    /// Build an index from a Cuttlefish ``.cf_seg`` segment file.
+    ///
+    /// Returns both the :class:`Dictionary` and a list of segment IDs. The
+    /// ``i``-th element of the segment ID list is the original Cuttlefish node
+    /// ID for sshash string ID ``i``.
+    ///
+    /// The GIL is released for the duration of parsing and building.
+    ///
+    /// :param path: Path to the ``.cf_seg`` file.
+    /// :returns: ``(Dictionary, list[int])`` — index and segment ID mapping.
+    /// :raises RuntimeError: If the file cannot be read or the build fails.
+    fn build_from_cf_seg(
+        &self,
+        py: Python<'_>,
+        path: &str,
+    ) -> PyResult<(Py<PyDictionary>, Vec<u64>)> {
+        let config = self.config.clone();
+        let path = path.to_string();
+        let (dict, segment_ids) = py.detach(|| -> Result<(Dictionary, Vec<u64>), String> {
+            let cf_data = parse_cf_seg(&path).map_err(|e| e.to_string())?;
+            let segment_ids = cf_data.segment_ids;
+            let sequences = cf_data.sequences;
+            let dict = DictionaryBuilder::new(config)?.build_from_sequences(sequences)?;
+            Ok((dict, segment_ids))
+        }).map_err(PyRuntimeError::new_err)?;
+        let py_dict = Py::new(py, PyDictionary { inner: make_dyn_dict(dict) })?;
+        Ok((py_dict, segment_ids))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BuildConfig(k={}, m={}, canonical={}, threads={}, ram_limit_gib={})",
+            self.config.k,
+            self.config.m,
+            self.config.canonical,
+            self.config.num_threads,
+            self.config.ram_limit_gib,
+        )
+    }
+}
+
 // ─── Module ──────────────────────────────────────────────────────────────────
 
 /// Python bindings for the sshash compressed k-mer dictionary.
@@ -408,5 +574,6 @@ fn sshash(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStreamingQuery>()?;
     m.add_class::<Hit>()?;
     m.add_class::<SequenceIterator>()?;
+    m.add_class::<PyBuildConfig>()?;
     Ok(())
 }
