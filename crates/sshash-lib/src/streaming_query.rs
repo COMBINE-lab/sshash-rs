@@ -184,10 +184,11 @@ where
         self.lookup_internal(kmer_bytes, None)
     }
 
-    /// Perform a streaming lookup with dictionary integration
+    /// Perform a streaming lookup with dictionary integration.
     ///
-    /// Internal method used by StreamingQueryEngine
-    pub(crate) fn lookup_with_dict(&mut self, kmer_bytes: &[u8], dict: &crate::dictionary::Dictionary) -> LookupResult {
+    /// Accepts a `&Dictionary` at call time rather than storing a reference,
+    /// so callers can manage the dictionary's lifetime independently (e.g. via `Arc`).
+    pub fn lookup_with_dict(&mut self, kmer_bytes: &[u8], dict: &crate::dictionary::Dictionary) -> LookupResult {
         self.lookup_internal(kmer_bytes, Some(dict))
     }
 

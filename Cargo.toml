@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/sshash-lib", "crates/sshash-cli"]
+members = ["crates/sshash-lib", "crates/sshash-cli", "crates/sshash-py"]
+default-members = ["crates/sshash-lib", "crates/sshash-cli"]
 
 [workspace.package]
 version = "0.3.0"
