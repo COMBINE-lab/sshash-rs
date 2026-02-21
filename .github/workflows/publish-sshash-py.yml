@@ -27,7 +27,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: auto
-          manifest-path: crates/sshash-py/Cargo.toml
+          working-directory: crates/sshash-py
           args: >-
             --release
             --out dist
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.target }}
-          path: dist
+          path: crates/sshash-py/dist
 
   publish:
     name: Publish to PyPI
