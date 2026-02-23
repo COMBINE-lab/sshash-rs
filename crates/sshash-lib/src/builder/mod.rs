@@ -21,7 +21,7 @@ pub mod external_sort;
 pub use cf_seg::{CfSegData, parse_cf_seg};
 pub use config::BuildConfiguration;
 pub use minimizer_tuples::MinimizerTuple;
-pub use dictionary_builder::DictionaryBuilder;
+pub use dictionary_builder::{DictionaryBuilder, BucketMetadata};
 
 // Re-export for convenience
 pub use crate::kmer::Kmer;

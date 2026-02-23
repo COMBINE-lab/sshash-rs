@@ -191,6 +191,17 @@ impl MinimizersControlMap {
             num_keys,
         }
     }
+
+    /// Create a MinimizersControlMap from a pre-built MPHF.
+    ///
+    /// Used by the external sort build path which builds the MPHF directly
+    /// without going through MinimizersControlMapBuilder.
+    pub fn from_mphf(mphf: PartitionedMphf, num_keys: u64) -> Self {
+        Self {
+            mphf: Some(mphf),
+            num_keys,
+        }
+    }
     
     /// Look up the MPHF index for a minimizer
     ///

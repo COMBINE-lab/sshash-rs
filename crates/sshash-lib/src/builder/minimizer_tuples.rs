@@ -58,16 +58,16 @@ use super::external_sort::{ExternalSorter, MinimizerTupleExternal, GIB};
 pub struct MinimizerTuple {
     /// The minimizer value (m-mer)
     pub minimizer: u64,
-    
+
     /// Position of the minimizer in the sequence (in bases from string start)
     pub pos_in_seq: u64,
-    
+
     /// Position of the minimizer within the k-mer (0 to k-m)
-    /// 
+    ///
     /// In canonical mode, this is ALWAYS relative to the forward k-mer,
     /// even when the RC minimizer is chosen (adjusted accordingly).
     pub pos_in_kmer: u8,
-    
+
     /// Number of consecutive k-mers that share this minimizer (super-k-mer size)
     pub num_kmers_in_super_kmer: u8,
 }
@@ -314,7 +314,9 @@ pub fn needs_external_sorting(total_kmers: u64, ram_limit_gib: usize) -> bool {
 /// * `config` - Build configuration (includes RAM limit, threads, tmp dir)
 ///
 /// # Returns
-/// Sorted vector of MinimizerTuples (loaded from merged temp file)
+/// Sorted vector of MinimizerTuples (loaded from merged temp file).
+/// For large datasets, prefer [`compute_minimizer_tuples_external_mmap`] which
+/// returns an mmap'd view instead of materializing all tuples.
 pub fn compute_minimizer_tuples_external<const K: usize>(
     spss: &SpectrumPreservingStringSet,
     config: &BuildConfiguration,
@@ -322,9 +324,39 @@ pub fn compute_minimizer_tuples_external<const K: usize>(
 where
     Kmer<K>: KmerBits,
 {
+    let sorter = run_external_sort::<K>(spss, config)?;
+    sorter.read_merged_tuples()
+}
+
+/// Compute minimizer tuples using external sorting, returning a file handle.
+///
+/// Like [`compute_minimizer_tuples_external`], but returns a [`FileTuples`]
+/// instead of materializing all tuples in memory. This is the production path
+/// for large datasets — tuples are accessed sequentially via buffered I/O.
+pub fn compute_minimizer_tuples_external_file<const K: usize>(
+    spss: &SpectrumPreservingStringSet,
+    config: &BuildConfiguration,
+) -> Result<super::external_sort::FileTuples, std::io::Error>
+where
+    Kmer<K>: KmerBits,
+{
+    let sorter = run_external_sort::<K>(spss, config)?;
+    sorter.open_merged_file()
+}
+
+/// Run the external sort pipeline (shared by both materialized and mmap paths).
+///
+/// Returns the ExternalSorter after merge is complete.
+fn run_external_sort<const K: usize>(
+    spss: &SpectrumPreservingStringSet,
+    config: &BuildConfiguration,
+) -> Result<ExternalSorter, std::io::Error>
+where
+    Kmer<K>: KmerBits,
+{
     let k = K;
     let m = config.m;
-    
+
     if k <= m {
         panic!("k must be > m (k={}, m={})", k, m);
     }
@@ -334,7 +366,7 @@ where
     } else {
         config.num_threads
     };
-    
+
     let sorter = Arc::new(ExternalSorter::new(
         &config.tmp_dirname,
         config.ram_limit_gib,
@@ -355,14 +387,14 @@ where
     // This matches C++ behavior exactly
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(num_threads);
-        
+
         for t in 0..num_threads {
             let begin = t * num_strings_per_thread;
             if begin >= num_strings {
                 break;
             }
             let end = (begin + num_strings_per_thread).min(num_strings);
-            
+
             let sorter = Arc::clone(&sorter);
             let handle = scope.spawn(move || {
                 process_string_range_external::<K>(
@@ -377,24 +409,22 @@ where
             });
             handles.push(handle);
         }
-        
+
         // Wait for all threads
         for handle in handles {
             handle.join().expect("Thread panicked")?;
         }
-        
+
         Ok::<(), std::io::Error>(())
     })?;
 
     // Merge all temp files
     let _merge_result = sorter.merge()?;
-    
-    // Read merged tuples into memory
-    let tuples = sorter.read_merged_tuples()?;
-    
-    // Cleanup is handled by Drop
-    
-    Ok(tuples)
+
+    // Unwrap the Arc — we're the only holder at this point
+    Arc::try_unwrap(sorter).map_err(|_| {
+        std::io::Error::other("ExternalSorter still has multiple owners")
+    })
 }
 
 /// Process a range of strings, flushing to disk when buffer fills

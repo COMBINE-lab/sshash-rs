@@ -226,11 +226,11 @@ pub fn classify_into_buckets(tuples: Vec<MinimizerTuple>) -> Vec<Bucket> {
     if tuples.is_empty() {
         return Vec::new();
     }
-    
+
     let mut buckets = Vec::new();
     let mut current_minimizer = tuples[0].minimizer;
     let mut current_bucket_tuples = Vec::new();
-    
+
     for tuple in tuples {
         if tuple.minimizer != current_minimizer {
             // Start new bucket
@@ -240,13 +240,128 @@ pub fn classify_into_buckets(tuples: Vec<MinimizerTuple>) -> Vec<Bucket> {
         }
         current_bucket_tuples.push(tuple);
     }
-    
+
     // Push the last bucket
     if !current_bucket_tuples.is_empty() {
         buckets.push(Bucket::new(current_minimizer, current_bucket_tuples));
     }
-    
+
     buckets
+}
+
+// ---------------------------------------------------------------------------
+// In-place (zero-copy) bucket classification
+// ---------------------------------------------------------------------------
+
+/// Lightweight bucket descriptor referencing a range in a sorted tuples array.
+///
+/// Unlike [`Bucket`], this does not own the tuples — it references them by
+/// index into the parent [`ClassifiedBuckets::tuples`] vector.
+#[derive(Debug, Clone, Copy)]
+pub struct BucketRef {
+    /// The minimizer value for this bucket.
+    pub minimizer: u64,
+    /// Start index (inclusive) in the tuples array.
+    pub start: usize,
+    /// Number of tuples in this bucket.
+    pub len: usize,
+    /// Number of unique super-kmers (distinct `pos_in_seq` values).
+    pub cached_size: usize,
+    /// Bucket type classification.
+    pub bucket_type: BucketType,
+}
+
+/// In-place classified buckets: owns a sorted tuple array plus lightweight
+/// bucket descriptors.
+///
+/// This avoids the memory duplication of [`classify_into_buckets`] which
+/// moves every tuple into per-bucket `Vec`s (briefly doubling memory for
+/// the tuple payload).
+pub struct ClassifiedBuckets {
+    /// The original sorted tuples — never moved or copied.
+    pub tuples: Vec<MinimizerTuple>,
+    /// One descriptor per unique minimizer, in the same order as the tuples.
+    pub bucket_refs: Vec<BucketRef>,
+}
+
+impl ClassifiedBuckets {
+    /// Number of buckets (unique minimizers).
+    #[inline]
+    pub fn num_buckets(&self) -> usize {
+        self.bucket_refs.len()
+    }
+
+    /// Get the tuple slice for bucket at index `idx`.
+    #[inline]
+    pub fn bucket_tuples(&self, idx: usize) -> &[MinimizerTuple] {
+        let bref = &self.bucket_refs[idx];
+        &self.tuples[bref.start..bref.start + bref.len]
+    }
+}
+
+/// Classify sorted minimizer tuples into buckets **in place**, without
+/// copying or moving the tuple data.
+///
+/// Returns a [`ClassifiedBuckets`] that owns the original tuples vector
+/// and provides lightweight [`BucketRef`] descriptors.
+pub fn classify_into_buckets_inplace(tuples: Vec<MinimizerTuple>) -> ClassifiedBuckets {
+    if tuples.is_empty() {
+        return ClassifiedBuckets {
+            tuples,
+            bucket_refs: Vec::new(),
+        };
+    }
+
+    let mut bucket_refs = Vec::new();
+    let mut start = 0usize;
+    let mut current_minimizer = tuples[0].minimizer;
+
+    for i in 1..tuples.len() {
+        if tuples[i].minimizer != current_minimizer {
+            let len = i - start;
+            let (cached_size, bucket_type) =
+                compute_bucket_size_from_slice(&tuples[start..i]);
+            bucket_refs.push(BucketRef {
+                minimizer: current_minimizer,
+                start,
+                len,
+                cached_size,
+                bucket_type,
+            });
+            current_minimizer = tuples[i].minimizer;
+            start = i;
+        }
+    }
+
+    // Last bucket
+    let len = tuples.len() - start;
+    let (cached_size, bucket_type) =
+        compute_bucket_size_from_slice(&tuples[start..]);
+    bucket_refs.push(BucketRef {
+        minimizer: current_minimizer,
+        start,
+        len,
+        cached_size,
+        bucket_type,
+    });
+
+    ClassifiedBuckets {
+        tuples,
+        bucket_refs,
+    }
+}
+
+/// Count unique super-kmers and classify a bucket from a tuple slice.
+fn compute_bucket_size_from_slice(tuples: &[MinimizerTuple]) -> (usize, BucketType) {
+    let mut bucket_size: usize = 0;
+    let mut prev_pos_in_seq = INVALID_UINT64;
+    for tuple in tuples {
+        if tuple.pos_in_seq != prev_pos_in_seq {
+            bucket_size += 1;
+            prev_pos_in_seq = tuple.pos_in_seq;
+        }
+    }
+    (bucket_size, BucketType::from_bucket_size(bucket_size))
 }
 
 #[cfg(test)]
