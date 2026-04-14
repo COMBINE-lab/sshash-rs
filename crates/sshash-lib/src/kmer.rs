@@ -441,6 +441,41 @@ where
         
         Self { bits: new_bits }
     }
+
+    /// Write the ASCII representation of this k-mer into `out[..K]`.
+    /// `out` must have length at least K.
+    #[inline]
+    pub fn write_ascii(&self, out: &mut [u8]) {
+        debug_assert!(out.len() >= K);
+        let mut bits = self.bits;
+        for slot in out.iter_mut().take(K) {
+            let base_bits = <Kmer<K> as KmerBits>::to_u8(
+                <Kmer<K> as KmerBits>::bitand(
+                    bits,
+                    <Kmer<K> as KmerBits>::from_u8(0b11u8),
+                ),
+            );
+            *slot = decode_base(base_bits);
+            bits = <Kmer<K> as KmerBits>::shr(bits, 2);
+        }
+    }
+
+    /// Slide a sequence window right by one base: drop the base at position 0
+    /// (low bits) and place `new_base` at position `K-1` (high bits).
+    ///
+    /// This matches the encoding used by [`Self::from_ascii_unchecked`] where
+    /// byte `i` of the window sits at bit offset `i*2`, so read-iteration
+    /// (window slides right) is `(bits >> 2) | (new_base << (2*(K-1)))`.
+    #[inline]
+    pub fn roll_right_base(self, new_base: u8) -> Self {
+        debug_assert!(new_base <= 0b11);
+        let shifted = <Kmer<K> as KmerBits>::shr(self.bits, 2);
+        let placed = <Kmer<K> as KmerBits>::shl(
+            <Kmer<K> as KmerBits>::from_u8(new_base),
+            2 * (K - 1),
+        );
+        Self { bits: <Kmer<K> as KmerBits>::bitor(shifted, placed) }
+    }
 }
 
 impl<const K: usize> PartialEq for Kmer<K>
@@ -599,6 +634,23 @@ mod tests {
         let kmer: Kmer<7> = Kmer::from_str("ACGTACG").unwrap();
         let rc = kmer.reverse_complement();
         assert_eq!(rc.to_string(), "CGTACGT");
+    }
+
+    #[test]
+    fn test_roll_right_base() {
+        // Sliding read window: ACGTG -> CGTGA means the window
+        // advanced by 1 base on the read, byte 0 ('A') dropped, byte 4 ('A')
+        // is the new base entering at position K-1.
+        let kmer: Kmer<5> = Kmer::from_str("ACGTG").unwrap();
+        // 'A' -> 2-bit 0; 'C'->1, 'G'->3, 'T'->2, 'G'->3
+        // New base at right: 'A' = 0
+        let rolled = kmer.roll_right_base(0);
+        assert_eq!(rolled.to_string(), "CGTGA");
+
+        let kmer: Kmer<7> = Kmer::from_str("ACGTACG").unwrap();
+        // Slide in 'T' (=2): "CGTACGT"
+        let rolled = kmer.roll_right_base(2);
+        assert_eq!(rolled.to_string(), "CGTACGT");
     }
 
     #[test]

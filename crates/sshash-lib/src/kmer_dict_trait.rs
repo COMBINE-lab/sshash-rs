@@ -16,17 +16,56 @@ use crate::streaming_query::{LookupResult, StreamingQueryEngine};
 /// implementations are free to exploit that (e.g. minimizer reuse, unitig
 /// extension, rolling k-mer updates).
 pub trait KmerStreamingQuery {
+    /// Hint to hot-loop callers: does this engine benefit from receiving
+    /// pre-computed canonical k-mer bits? Byte-oriented engines (e.g. sshash)
+    /// set this to `false` so callers skip the canonicalization/bit conversion
+    /// work; bit-oriented engines (e.g. tiny-dict) set it to `true`.
+    const PREFERS_BITS: bool;
+
     /// Drop any streaming state so the next lookup parses its k-mer from scratch.
     fn reset(&mut self);
 
     /// Look up a single k-mer (ASCII bytes, length = `k`).
     fn lookup(&mut self, kmer_bytes: &[u8]) -> LookupResult;
 
+    /// Look up by pre-parsed canonical k-mer bits plus the original FW bytes.
+    ///
+    /// `canonical_bits` is the u64 representation of the canonical k-mer;
+    /// `fw_is_canonical` indicates whether the read's forward orientation equals
+    /// the canonical; `fw_bytes` is the forward ASCII k-mer (length = `k`).
+    ///
+    /// Implementations may use whichever representation is cheaper — the tiny
+    /// dictionary uses `canonical_bits` directly; the sshash streaming engine
+    /// uses `fw_bytes` so it can feed its existing byte-level lookup path
+    /// without an ASCII→bits→ASCII round-trip.
+    fn lookup_bits(
+        &mut self,
+        canonical_bits: u64,
+        fw_is_canonical: bool,
+        fw_bytes: &[u8],
+    ) -> LookupResult;
+
     /// Number of lookups that required a full dictionary search (slow path).
     fn num_searches(&self) -> u64;
 
     /// Number of lookups resolved by extending along the current unitig (fast path).
     fn num_extensions(&self) -> u64;
+
+    /// Offset the current anchor along its SPSS string by `read_offset` read-positions,
+    /// *without* performing a full lookup. Returns `true` when the anchor was
+    /// successfully shifted (the caller must have independently verified the
+    /// sequence agreement, e.g. via a direct SPSS compare), and subsequent
+    /// consecutive lookups may use the fast path. Returns `false` if the engine
+    /// has no anchor concept, no current anchor, or the shifted position would
+    /// leave the string.
+    ///
+    /// Default: no-op (`false`). Byte-oriented engines (sshash) keep this default
+    /// — their streaming state is a rolling minimizer that does not benefit from
+    /// the skip hint. Bit-oriented engines (tiny-dict) override it.
+    #[inline]
+    fn skip_anchor_along_string(&mut self, _read_offset: i32) -> bool {
+        false
+    }
 }
 
 /// A k-mer dictionary: maps canonical k-mers to their position in an SPSS.
@@ -75,6 +114,8 @@ impl<'a, const K: usize> KmerStreamingQuery for StreamingQueryEngine<'a, K>
 where
     Kmer<K>: KmerBits,
 {
+    const PREFERS_BITS: bool = false;
+
     #[inline]
     fn reset(&mut self) {
         StreamingQueryEngine::reset(self)
@@ -83,6 +124,16 @@ where
     #[inline]
     fn lookup(&mut self, kmer_bytes: &[u8]) -> LookupResult {
         StreamingQueryEngine::lookup(self, kmer_bytes)
+    }
+
+    #[inline]
+    fn lookup_bits(
+        &mut self,
+        _canonical_bits: u64,
+        _fw_is_canonical: bool,
+        fw_bytes: &[u8],
+    ) -> LookupResult {
+        StreamingQueryEngine::lookup(self, fw_bytes)
     }
 
     #[inline]

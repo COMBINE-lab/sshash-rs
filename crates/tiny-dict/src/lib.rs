@@ -259,7 +259,12 @@ impl TinyDictionary {
         let fw_bits = <Kmer<K> as KmerBits>::to_u64(fw.bits());
         let canon_bits = <Kmer<K> as KmerBits>::to_u64(canonical.bits());
         let query_fw_is_canonical = fw_bits == canon_bits;
+        self.lookup_core_bits(canon_bits, query_fw_is_canonical)
+    }
 
+    /// Bit-level core lookup: caller has already parsed and canonicalized.
+    #[inline]
+    fn lookup_core_bits(&self, canon_bits: u64, query_fw_is_canonical: bool) -> Option<(u32, u32, i8)> {
         let packed = *self.index.get(&canon_bits)?;
         let string_id = unpack_string_id(packed);
         let kmer_id = unpack_kmer_id(packed);
@@ -280,7 +285,29 @@ impl TinyDictionary {
     where
         Kmer<K>: KmerBits,
     {
-        match self.lookup_core::<K>(kmer_bytes) {
+        self.finish_lookup::<K>(self.lookup_core::<K>(kmer_bytes))
+    }
+
+    /// Same as [`Self::lookup`] but caller provides the pre-parsed canonical
+    /// k-mer bits. Skips the ASCII→2-bit parse entirely.
+    #[inline]
+    pub fn lookup_bits<const K: usize>(
+        &self,
+        canonical_bits: u64,
+        fw_is_canonical: bool,
+    ) -> LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        self.finish_lookup::<K>(self.lookup_core_bits(canonical_bits, fw_is_canonical))
+    }
+
+    #[inline]
+    fn finish_lookup<const K: usize>(&self, core: Option<(u32, u32, i8)>) -> LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        match core {
             Some((string_id, kmer_id_in_string, orientation)) => {
                 let (string_begin, string_end) = self.spss.string_offsets(string_id as u64);
                 let kmer_offset = string_begin + kmer_id_in_string as u64;
@@ -353,10 +380,11 @@ where
     }
 
     /// Try to satisfy a lookup by extending the current anchor along its
-    /// SPSS unitig. Returns `Some(result)` on success; `None` means the
-    /// caller must fall back to the hashmap.
+    /// SPSS unitig. The caller provides the pre-parsed forward read k-mer.
+    /// Returns `Some(result)` on success; `None` means the caller must fall
+    /// back to the hashmap.
     #[inline]
-    fn try_extend(&mut self, kmer_bytes: &[u8]) -> Option<LookupResult> {
+    fn try_extend_fw(&mut self, read_fw: Kmer<K>) -> Option<LookupResult> {
         let anchor = self.anchor.as_mut()?;
         let k_u64 = K as u64;
         let string_len = anchor.string_end - anchor.string_begin;
@@ -377,7 +405,6 @@ where
 
         let abs_pos = anchor.string_begin + new_pos;
         let spss_fw = self.dict.spss.decode_kmer_at::<K>(abs_pos as usize);
-        let read_fw = Kmer::<K>::from_ascii_unchecked(kmer_bytes);
 
         // Expected read-fw bits given SPSS-fw at new_pos and the anchor's orientation.
         let expected_fw = if anchor.orientation > 0 {
@@ -426,6 +453,8 @@ impl<'a, const K: usize> KmerStreamingQuery for TinyStreamingQuery<'a, K>
 where
     Kmer<K>: KmerBits,
 {
+    const PREFERS_BITS: bool = true;
+
     #[inline]
     fn reset(&mut self) {
         self.anchor = None;
@@ -433,14 +462,45 @@ where
 
     #[inline]
     fn lookup(&mut self, kmer_bytes: &[u8]) -> LookupResult {
+        // Parse once, reuse for fast path and slow path.
+        let read_fw = Kmer::<K>::from_ascii_unchecked(kmer_bytes);
         self.num_lookups += 1;
-        if let Some(result) = self.try_extend(kmer_bytes) {
+        if let Some(result) = self.try_extend_fw(read_fw) {
             self.num_extensions += 1;
             return result;
         }
-        // Slow path: full hashbrown probe.
         self.num_searches += 1;
-        let result = self.dict.lookup::<K>(kmer_bytes);
+        let canonical = read_fw.canonical();
+        let fw_bits = <Kmer<K> as KmerBits>::to_u64(read_fw.bits());
+        let canon_bits = <Kmer<K> as KmerBits>::to_u64(canonical.bits());
+        let fw_is_canonical = fw_bits == canon_bits;
+        let result = self.dict.lookup_bits::<K>(canon_bits, fw_is_canonical);
+        self.set_anchor_from_result(&result);
+        result
+    }
+
+    #[inline]
+    fn lookup_bits(
+        &mut self,
+        canonical_bits: u64,
+        fw_is_canonical: bool,
+        _fw_bytes: &[u8],
+    ) -> LookupResult {
+        // Caller has already parsed+canonicalized the k-mer. If we have an
+        // anchor and the fast-path fits, reconstruct read_fw from bits and try;
+        // otherwise, skip straight to the hashbrown probe using the bits.
+        self.num_lookups += 1;
+        if self.anchor.is_some() {
+            // Reconstruct FW k-mer to call try_extend_fw.
+            let canonical = Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(canonical_bits));
+            let read_fw = if fw_is_canonical { canonical } else { canonical.reverse_complement() };
+            if let Some(result) = self.try_extend_fw(read_fw) {
+                self.num_extensions += 1;
+                return result;
+            }
+        }
+        self.num_searches += 1;
+        let result = self.dict.lookup_bits::<K>(canonical_bits, fw_is_canonical);
         self.set_anchor_from_result(&result);
         result
     }
@@ -453,6 +513,37 @@ where
     #[inline]
     fn num_extensions(&self) -> u64 {
         self.num_extensions
+    }
+
+    #[inline]
+    fn skip_anchor_along_string(&mut self, read_offset: i32) -> bool {
+        // Shift the live anchor by `read_offset` read-positions. Sequence
+        // agreement must have been verified by the caller (piscem's
+        // check_direct_match). The SPSS offset direction follows the anchor's
+        // orientation.
+        let anchor = match &mut self.anchor {
+            Some(a) => a,
+            None => return false,
+        };
+        let k_u64 = K as u64;
+        let string_len = anchor.string_end - anchor.string_begin;
+        let signed_spss_off = if anchor.orientation > 0 {
+            read_offset as i64
+        } else {
+            -(read_offset as i64)
+        };
+        let new_pos = anchor.kmer_pos_in_string as i64 + signed_spss_off;
+        if new_pos < 0 {
+            self.anchor = None;
+            return false;
+        }
+        let new_pos_u = new_pos as u64;
+        if new_pos_u + k_u64 > string_len {
+            self.anchor = None;
+            return false;
+        }
+        anchor.kmer_pos_in_string = new_pos_u as u32;
+        true
     }
 }
 
