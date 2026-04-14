@@ -714,6 +714,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -1939,6 +1941,18 @@ checksum = "965fe0c26be5c56c94e38ba547249074803efd52adfb66de62107d95aab3eaca"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",
+]
+
+[[package]]
+name = "tiny-dict"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "hashbrown 0.15.5",
+ "rand 0.9.2",
+ "rapidhash 4.4.0",
+ "sshash-lib",
+ "tracing",
 ]
 
 [[package]]

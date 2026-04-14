@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sshash-lib", "crates/sshash-cli", "crates/sshash-py"]
+members = ["crates/sshash-lib", "crates/sshash-cli", "crates/sshash-py", "crates/tiny-dict"]
 default-members = ["crates/sshash-lib", "crates/sshash-cli"]
 
 [workspace.package]
@@ -16,6 +16,7 @@ categories = ["command-line-utilities", "data-structures"]
 [workspace.dependencies]
 # Core library
 sshash-lib = { version = "0.4.0", path = "crates/sshash-lib" }
+tiny-dict = { version = "0.4.0", path = "crates/tiny-dict" }
 
 # Succinct data structures (git main for bidirectional EF iterator support)
 sux = { version = "0.13.1", features = ["epserde"] }

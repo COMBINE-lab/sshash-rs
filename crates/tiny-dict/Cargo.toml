@@ -1,0 +1,19 @@
+[package]
+name = "tiny-dict"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Fast hashbrown-based k-mer dictionary for small references (drop-in alternative to sshash)"
+
+[dependencies]
+sshash-lib = { workspace = true }
+hashbrown = "0.15"
+rapidhash = "4"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+rand = "0.9"

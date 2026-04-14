@@ -121,6 +121,25 @@ impl SpectrumPreservingStringSet {
         self.strings.len()
     }
 
+    /// Access the raw 2-bit-packed strings buffer. Intended for crates that
+    /// need to clone the SPSS contents into their own representation.
+    #[inline]
+    pub fn strings_raw(&self) -> &[u8] {
+        &self.strings
+    }
+
+    /// Number of offset entries (`num_strings + 1`).
+    #[inline]
+    pub fn offsets_len(&self) -> usize {
+        self.offsets.len()
+    }
+
+    /// Get the offset at index `i` (0..=num_strings). Offsets are in bases.
+    #[inline]
+    pub fn offset_at(&self, i: usize) -> u64 {
+        self.offsets.access(i)
+    }
+
     /// Get the byte size of the offsets vector
     pub fn offsets_bytes(&self) -> usize {
         self.offsets.num_bytes() as usize
