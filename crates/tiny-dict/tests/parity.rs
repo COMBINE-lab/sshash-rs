@@ -119,6 +119,37 @@ fn tiny_dict_parity_random_absent() {
 }
 
 #[test]
+fn tiny_dict_tdct_roundtrip() {
+    let mut rng = StdRng::seed_from_u64(0xD07D07);
+    let sequences: Vec<String> = (0..4).map(|_| random_dna(&mut rng, 300)).collect();
+    let sshash = build_sshash(sequences.clone());
+    let tiny = TinyDictionary::from_sshash::<K>(&sshash);
+
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_path_buf();
+    tiny.save(&path).expect("save");
+    let loaded = TinyDictionary::load(&path).expect("load");
+
+    assert_eq!(loaded.k(), tiny.k());
+    assert_eq!(loaded.m(), tiny.m());
+    assert_eq!(loaded.canonical(), tiny.canonical());
+
+    for seq in &sequences {
+        let bytes = seq.as_bytes();
+        if bytes.len() < K {
+            continue;
+        }
+        for start in 0..=(bytes.len() - K) {
+            let kmer_bytes = &bytes[start..start + K];
+            let kmer_str = std::str::from_utf8(kmer_bytes).unwrap();
+            let a = tiny.lookup::<K>(kmer_bytes);
+            let b = loaded.lookup::<K>(kmer_bytes);
+            assert_result_equal(&a, &b, kmer_str);
+        }
+    }
+}
+
+#[test]
 fn tiny_dict_streaming_query_matches_one_shot() {
     let mut rng = StdRng::seed_from_u64(42);
     let sequences: Vec<String> = (0..3).map(|_| random_dna(&mut rng, 150)).collect();

@@ -23,11 +23,28 @@
 //! `(string_id, kmer_id_in_string, spss_is_canonical)`.
 
 use hashbrown::HashMap;
-use rapidhash::fast::RandomState as RapidBuildHasher;
+use rapidhash::fast::SeedableState;
 use sshash_lib::spectrum_preserving_string_set::SpectrumPreservingStringSet;
 use sshash_lib::{
     Dictionary, Kmer, KmerBits, KmerDictionary, KmerStreamingQuery, LookupResult,
 };
+
+pub mod io;
+
+/// BuildHasher for the TinyDictionary hashmap.
+///
+/// We use `rapidhash::fast::SeedableState::fixed()` rather than the default
+/// `RandomState` so the hash of any given key is byte-for-byte identical
+/// across runs of the same binary. Save/load relies on this: precomputed
+/// hashes stored in `.tdct` files must re-resolve to the same slots on
+/// reload. See `io::RAPIDHASH_VERSION` and the load-time probe check for
+/// the safeguards that detect cross-version / cross-platform drift.
+pub type TinyBuildHasher = SeedableState<'static>;
+
+#[inline]
+pub(crate) fn tiny_build_hasher() -> TinyBuildHasher {
+    SeedableState::fixed()
+}
 
 /// Owned lightweight SPSS used inside [`TinyDictionary`].
 ///
@@ -112,7 +129,7 @@ impl TinySpss {
 ///   `(string_id, kmer_id_in_string)` equals the canonical k-mer. Used to
 ///   reconstruct `kmer_orientation` at query time without decoding.
 /// - `kmer_id_in_string`: ≤ 2^32 bases per string (more than enough).
-type PackedValue = u64;
+pub(crate) type PackedValue = u64;
 
 const SPSS_CANONICAL_BIT: u64 = 1u64 << 32;
 const KMER_ID_MASK: u64 = (1u64 << 32) - 1;
@@ -149,7 +166,7 @@ pub struct TinyDictionary {
     m: usize,
     canonical: bool,
     /// canonical k-mer bits (u64) → packed (string_id, kmer_id_in_string, spss_is_canonical)
-    index: HashMap<u64, PackedValue, RapidBuildHasher>,
+    index: HashMap<u64, PackedValue, TinyBuildHasher>,
 }
 
 impl TinyDictionary {
@@ -180,8 +197,8 @@ impl TinyDictionary {
             0
         };
         let total_kmers = total_bases.saturating_sub(num_strings * (K as u64 - 1));
-        let mut index: HashMap<u64, PackedValue, RapidBuildHasher> =
-            HashMap::with_capacity_and_hasher(total_kmers as usize, RapidBuildHasher::default());
+        let mut index: HashMap<u64, PackedValue, TinyBuildHasher> =
+            HashMap::with_capacity_and_hasher(total_kmers as usize, tiny_build_hasher());
 
         for string_id in 0..num_strings {
             let (begin, end) = spss.string_offsets(string_id);
