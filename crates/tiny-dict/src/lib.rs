@@ -99,26 +99,46 @@ impl TinySpss {
         let byte_offset = absolute_pos / 4;
         let bit_shift = (absolute_pos % 4) * 2;
         let needed_bits = K * 2;
+        let needed_bytes = (needed_bits + bit_shift).div_ceil(8);
 
-        let raw = if byte_offset + 8 <= self.strings.len() {
-            // SAFETY: bounds-checked above; strings are little-endian 2-bit
-            // encoding so native-endian u64 read on LE hosts is correct.
-            unsafe {
-                std::ptr::read_unaligned(self.strings.as_ptr().add(byte_offset) as *const u64)
-            }
+        if needed_bytes <= 8 {
+            let raw = if byte_offset + 8 <= self.strings.len() {
+                // SAFETY: bounds-checked above; strings are little-endian 2-bit
+                // encoding so native-endian u64 read on LE hosts is correct.
+                unsafe {
+                    std::ptr::read_unaligned(self.strings.as_ptr().add(byte_offset) as *const u64)
+                }
+            } else {
+                let mut buf = [0u8; 8];
+                let avail = self.strings.len() - byte_offset;
+                buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
+                u64::from_le_bytes(buf)
+            };
+            let shifted = raw >> bit_shift;
+            let mask = if needed_bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << needed_bits) - 1
+            };
+            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(shifted & mask))
         } else {
-            let mut buf = [0u8; 8];
-            let avail = self.strings.len() - byte_offset;
-            buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
-            u64::from_le_bytes(buf)
-        };
-        let shifted = raw >> bit_shift;
-        let mask = if needed_bits >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << needed_bits) - 1
-        };
-        Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(shifted & mask))
+            // K=31 (and K=30) at bit_shift ∈ {4, 6} need 9 bytes: 62+6 = 68
+            // bits exceeds a u64. Load u128 and mask; value still fits in u64
+            // because K ≤ 31 caps needed_bits at 62.
+            let raw: u128 = if byte_offset + 16 <= self.strings.len() {
+                unsafe {
+                    std::ptr::read_unaligned(self.strings.as_ptr().add(byte_offset) as *const u128)
+                }
+            } else {
+                let mut buf = [0u8; 16];
+                let avail = self.strings.len() - byte_offset;
+                buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
+                u128::from_le_bytes(buf)
+            };
+            let shifted = raw >> bit_shift;
+            let mask = (1u128 << needed_bits) - 1;
+            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64((shifted & mask) as u64))
+        }
     }
 }
 
