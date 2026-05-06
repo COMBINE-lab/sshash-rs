@@ -50,3 +50,6 @@ tempfile = "3.15"
 
 # Utilities
 seq-macro = "0.3"
+
+[profile.release]
+lto = "thin"

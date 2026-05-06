@@ -52,7 +52,8 @@ impl MinimizerInfo {
 /// ```
 pub struct MinimizerIterator {
     k: usize,
-    m: usize,
+    window_size: usize, // k - m
+    mmer_mask: u64,
     position: u64,
     min_pos_in_kmer: usize,
     min_value: u64,
@@ -71,9 +72,11 @@ impl MinimizerIterator {
     pub fn with_seed(k: usize, m: usize, seed: u64) -> Self {
         assert!(k > 0 && m <= k, "k must be > 0 and m <= k");
         let hasher = DeterministicHasher::new(seed);
+        let mmer_mask = (1u64 << (m * 2)) - 1;
         let mut iter = Self {
             k,
-            m,
+            window_size: k - m,
+            mmer_mask,
             position: 0,
             min_pos_in_kmer: 0,
             min_value: 0,
@@ -112,42 +115,43 @@ impl MinimizerIterator {
     }
 
     /// Compute hash of a u64 value using the seeded hasher
+    #[inline(always)]
     fn hash_u64(&self, value: u64) -> u64 {
         self.hasher.hash_u64(value)
     }
 
     /// Extract the next minimizer from a k-mer
-    ///
-    /// For sliding through a sequence, call this repeatedly with consecutive k-mers
-    /// to efficiently compute minimizers at each position.
+    #[inline(always)]
     pub fn next<const K: usize>(&mut self, kmer: Kmer<K>) -> MinimizerInfo
     where
         Kmer<K>: crate::kmer::KmerBits,
     {
-        assert_eq!(K, self.k, "k-mer size must match iterator k");
+        debug_assert_eq!(K, self.k, "k-mer size must match iterator k");
 
         if self.min_pos_in_kmer == 0 {
-            // Minimum fell out of window: rescan to find new minimum
-            // This matches C++ logic in minimizer_iterator.hpp line 35-36
-            // Use wrapping_add because min_position starts at u64::MAX after reset
             self.position = self.min_position.wrapping_add(1);
             self.rescan(kmer);
         } else {
-            // Sliding: check new m-mer at the end of the k-mer
             self.position += 1;
 
-            // Extract the rightmost m-mer
-            let mmer_value = self.extract_mmer(kmer, self.k - self.m);
+            // Hot path: extract rightmost m-mer. For K<=31, kmer has exactly K*2
+            // meaningful bits; shifting right by window_size*2 leaves exactly m*2 bits
+            // — no mask needed (upper bits are already zero).
+            let shift = self.window_size * 2;
+            let mmer_value = if K <= 31 {
+                <Kmer<K> as crate::kmer::KmerBits>::to_u64(kmer.bits()) >> shift
+            } else {
+                let bits_u128 = <Kmer<K> as crate::kmer::KmerBits>::to_u128(kmer.bits());
+                ((bits_u128 >> shift) as u64) & self.mmer_mask
+            };
             let hash = self.hash_u64(mmer_value);
 
             if hash < self.min_hash {
-                // Found a new minimum (always at position k-m in new k-mer)
                 self.min_hash = hash;
                 self.min_value = mmer_value;
                 self.min_position = self.position;
-                self.min_pos_in_kmer = self.k - self.m;
+                self.min_pos_in_kmer = self.window_size;
             } else {
-                // Minimum is still in window, just shifted left
                 self.min_pos_in_kmer -= 1;
             }
         }
@@ -167,37 +171,155 @@ impl MinimizerIterator {
 
         let begin = self.position;
         
-        // Try each m-mer position in the k-mer window
-        for i in 0..=(self.k - self.m) {
+        for i in 0..=self.window_size {
             let mmer_value = self.extract_mmer(kmer, i);
             let hash = self.hash_u64(mmer_value);
 
             if hash < self.min_hash {
-                // Leftmost minimum wins ties (matching C++ behavior)
                 self.min_hash = hash;
                 self.min_value = mmer_value;
                 self.min_pos_in_kmer = i;
             }
         }
-        
-        // Set position to represent the position of the rightmost m-mer after rescan
-        // This matches C++ logic: m_position = begin + (k - m) at end of rescan
-        self.position = begin + (self.k - self.m) as u64;
+
+        self.position = begin + self.window_size as u64;
         self.min_position = begin + self.min_pos_in_kmer as u64;
     }
 
-    /// Extract m bases starting at position `start_pos` from a k-mer
-    /// Returns the m-mer as a u64
-    #[inline]
+    #[inline(always)]
     fn extract_mmer<const K: usize>(&self, kmer: Kmer<K>, start_pos: usize) -> u64
     where
         Kmer<K>: crate::kmer::KmerBits,
     {
-        // Extract m bases as a single shift+mask on the native storage type
         let shift = start_pos * 2;
-        let mask = (1u64 << (self.m * 2)) - 1;
-        let bits_u128 = <Kmer<K> as crate::kmer::KmerBits>::to_u128(kmer.bits());
-        ((bits_u128 >> shift) as u64) & mask
+        if K <= 31 {
+            (<Kmer<K> as crate::kmer::KmerBits>::to_u64(kmer.bits()) >> shift) & self.mmer_mask
+        } else {
+            let bits_u128 = <Kmer<K> as crate::kmer::KmerBits>::to_u128(kmer.bits());
+            ((bits_u128 >> shift) as u64) & self.mmer_mask
+        }
+    }
+}
+
+/// Reverse-complement minimizer iterator.
+///
+/// Matches the C++ `minimizer_iterator_rc`: extracts the LEFTMOST m-mer
+/// (position 0) on each sliding step, and rescans when the minimum falls
+/// out of the window on the right side (pos_in_kmer == window_size).
+///
+/// Uses `<=` comparison (rightmost wins on tie) vs forward's `<` (leftmost wins).
+pub struct MinimizerIteratorRc {
+    window_size: usize, // k - m
+    mmer_mask: u64,
+    position: u64,
+    min_pos_in_kmer: usize,
+    min_value: u64,
+    min_position: u64,
+    min_hash: u64,
+    hasher: DeterministicHasher,
+}
+
+impl MinimizerIteratorRc {
+    /// Create a new RC minimizer iterator with a seeded hasher.
+    pub fn with_seed(k: usize, m: usize, seed: u64) -> Self {
+        assert!(k > 0 && m <= k, "k must be > 0 and m <= k");
+        let hasher = DeterministicHasher::new(seed);
+        let mmer_mask = (1u64 << (m * 2)) - 1;
+        let mut iter = Self {
+            window_size: k - m,
+            mmer_mask,
+            position: 0,
+            min_pos_in_kmer: 0,
+            min_value: 0,
+            min_position: 0,
+            min_hash: u64::MAX,
+            hasher,
+        };
+        iter.reset();
+        iter
+    }
+
+    /// Reset internal state (triggers rescan on next call).
+    pub fn reset(&mut self) {
+        self.min_pos_in_kmer = self.window_size;
+        self.min_position = self.position.wrapping_sub(1);
+        self.min_hash = u64::MAX;
+    }
+
+    /// Set a new starting position.
+    pub fn set_position(&mut self, position: u64) {
+        self.position = position;
+        self.reset();
+    }
+
+    #[inline(always)]
+    fn hash_u64(&self, value: u64) -> u64 {
+        self.hasher.hash_u64(value)
+    }
+
+    /// Extract the next minimizer from an RC k-mer.
+    #[inline(always)]
+    pub fn next<const K: usize>(&mut self, kmer: Kmer<K>) -> MinimizerInfo
+    where
+        Kmer<K>: crate::kmer::KmerBits,
+    {
+        if self.min_pos_in_kmer == self.window_size {
+            self.position = self.min_position.wrapping_add(1);
+            self.rescan(kmer);
+        } else {
+            self.position += 1;
+
+            // Extract leftmost m-mer (position 0 = lower m*2 bits)
+            let mmer_value = if K <= 31 {
+                <Kmer<K> as crate::kmer::KmerBits>::to_u64(kmer.bits()) & self.mmer_mask
+            } else {
+                (<Kmer<K> as crate::kmer::KmerBits>::to_u128(kmer.bits()) as u64) & self.mmer_mask
+            };
+            let hash = self.hash_u64(mmer_value);
+
+            if hash <= self.min_hash {
+                self.min_hash = hash;
+                self.min_value = mmer_value;
+                self.min_position = self.position;
+                self.min_pos_in_kmer = 0;
+            } else {
+                self.min_pos_in_kmer += 1;
+            }
+        }
+
+        MinimizerInfo::new(self.min_value, self.min_position, self.min_pos_in_kmer)
+    }
+
+    fn rescan<const K: usize>(&mut self, kmer: Kmer<K>)
+    where
+        Kmer<K>: crate::kmer::KmerBits,
+    {
+        self.min_hash = u64::MAX;
+        self.min_value = 0;
+        self.min_pos_in_kmer = 0;
+
+        let begin = self.position;
+        let kmer_bits = if K <= 31 {
+            <Kmer<K> as crate::kmer::KmerBits>::to_u64(kmer.bits()) as u128
+        } else {
+            <Kmer<K> as crate::kmer::KmerBits>::to_u128(kmer.bits())
+        };
+
+        // Iterate positions 0..=window_size, extracting m-mer at each offset
+        // Position i corresponds to m-mer starting at bit offset i*2 from the right
+        for i in 0..=self.window_size {
+            let mmer_value = ((kmer_bits >> (i * 2)) as u64) & self.mmer_mask;
+            let hash = self.hash_u64(mmer_value);
+
+            if hash < self.min_hash {
+                self.min_hash = hash;
+                self.min_value = mmer_value;
+                self.min_pos_in_kmer = i;
+            }
+        }
+
+        self.position = begin + self.window_size as u64;
+        self.min_position = begin + self.min_pos_in_kmer as u64;
     }
 }
 

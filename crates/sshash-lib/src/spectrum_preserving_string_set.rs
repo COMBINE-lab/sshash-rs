@@ -46,7 +46,10 @@ impl SpectrumPreservingStringSet {
     /// * `offsets` - Offset vector for string boundaries (will be converted to EF)
     /// * `k` - K-mer size
     /// * `m` - Minimizer size
-    pub fn from_parts(strings: Vec<u8>, offsets: OffsetsVector, k: usize, m: usize) -> Self {
+    pub fn from_parts(mut strings: Vec<u8>, offsets: OffsetsVector, k: usize, m: usize) -> Self {
+        // Pad strings with 8 zero bytes to allow safe unaligned u64 reads
+        // near the end without out-of-bounds access.
+        strings.resize(strings.len() + 8, 0);
         Self {
             strings,
             offsets: EliasFanoOffsets::from_offsets_vector(offsets),
@@ -87,6 +90,12 @@ impl SpectrumPreservingStringSet {
         self.m
     }
 
+    /// Get raw access to the packed string data (for buffered reading)
+    #[inline]
+    pub fn strings_data(&self) -> &[u8] {
+        &self.strings
+    }
+
     /// Get the total number of bases stored
     pub fn total_bases(&self) -> u64 {
         if !self.offsets.is_empty() {
@@ -111,14 +120,14 @@ impl SpectrumPreservingStringSet {
         self.offsets.locate_with_end(absolute_pos)
     }
 
-    /// Get memory usage in bits
+    /// Get memory usage in bits (excludes padding bytes)
     pub fn num_bits(&self) -> u64 {
-        (self.strings.len() as u64) * 8 + self.offsets.num_bits()
+        ((self.strings.len() - 8) as u64) * 8 + self.offsets.num_bits()
     }
 
-    /// Get the byte size of the packed strings data
+    /// Get the byte size of the packed strings data (excludes padding)
     pub fn strings_bytes(&self) -> usize {
-        self.strings.len()
+        self.strings.len() - 8
     }
 
     /// Access the raw 2-bit-packed strings buffer. Intended for crates that
@@ -200,9 +209,7 @@ impl SpectrumPreservingStringSet {
     }
 
     /// Decode a k-mer at an absolute base position in the concatenated strings.
-    /// Avoids the need for string_id (no binary search needed).
-    /// This matches the C++ `util::read_kmer_at` approach with decoded_offsets.
-    #[inline]
+    #[inline(always)]
     pub fn decode_kmer_at<const K: usize>(&self, absolute_pos: usize) -> Kmer<K>
     where
         Kmer<K>: KmerBits,
@@ -210,65 +217,77 @@ impl SpectrumPreservingStringSet {
         let byte_offset = absolute_pos / 4;
         let bit_shift = (absolute_pos % 4) * 2;
         let needed_bits = K * 2;
-        let needed_bytes = (needed_bits + bit_shift).div_ceil(8);
-        
-        if needed_bytes <= 8 {
-            // Fast path: unaligned u64 load when we have enough bytes.
-            // Avoids bounds-checked copy_from_slice + zero-fill overhead.
-            // Note: ptr::read_unaligned produces native-endian u64, which on
-            // little-endian matches u64::from_le_bytes (the 2-bit encoding
-            // assumes LE byte order).
-            let raw = if byte_offset + 8 <= self.strings.len() {
-                unsafe {
-                    std::ptr::read_unaligned(
-                        self.strings.as_ptr().add(byte_offset) as *const u64
-                    )
-                }
-            } else {
-                // Near end of strings — rare fallback
-                let mut buf = [0u8; 8];
-                let avail = self.strings.len() - byte_offset;
-                buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
-                u64::from_le_bytes(buf)
+
+        if K <= 31 {
+            // K<=31: need at most 62+6=68 bits. Load u64 (64 bits) from byte_offset,
+            // then grab one more byte if bit_shift > 2 causes overflow.
+            let raw = unsafe {
+                std::ptr::read_unaligned(
+                    self.strings.as_ptr().add(byte_offset) as *const u64
+                )
             };
-            let shifted = raw >> bit_shift;
-            let mask = if needed_bits >= 64 { u64::MAX } else { (1u64 << needed_bits) - 1 };
-            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(shifted & mask))
+            let mut result = raw >> bit_shift;
+            if bit_shift > 2 {
+                // High bits of the kmer spill into byte_offset+8
+                let extra = unsafe { *self.strings.as_ptr().add(byte_offset + 8) };
+                result |= (extra as u64) << (64 - bit_shift);
+            }
+            let mask = (1u64 << needed_bits) - 1;
+            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(result & mask))
         } else {
-            // For K=63 (needed_bits=126), when bit_shift > 2 we need more
-            // than 128 bits from the byte stream. Load u128 + extra byte.
-            let (raw, extra_byte) = if byte_offset + 17 <= self.strings.len() {
-                let r = unsafe {
-                    std::ptr::read_unaligned(
-                        self.strings.as_ptr().add(byte_offset) as *const u128
-                    )
-                };
-                (r, self.strings[byte_offset + 16])
-            } else if byte_offset + 16 <= self.strings.len() {
-                let r = unsafe {
-                    std::ptr::read_unaligned(
-                        self.strings.as_ptr().add(byte_offset) as *const u128
-                    )
-                };
-                let extra = if byte_offset + 16 < self.strings.len() {
-                    self.strings[byte_offset + 16]
+            let needed_bytes = (needed_bits + bit_shift).div_ceil(8);
+            if needed_bytes <= 8 {
+                let raw = if byte_offset + 8 <= self.strings.len() {
+                    unsafe {
+                        std::ptr::read_unaligned(
+                            self.strings.as_ptr().add(byte_offset) as *const u64
+                        )
+                    }
                 } else {
-                    0u8
+                    let mut buf = [0u8; 8];
+                    let avail = self.strings.len() - byte_offset;
+                    buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
+                    u64::from_le_bytes(buf)
                 };
-                (r, extra)
+                let shifted = raw >> bit_shift;
+                let mask = if needed_bits >= 64 { u64::MAX } else { (1u64 << needed_bits) - 1 };
+                Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(shifted & mask))
             } else {
-                let mut buf = [0u8; 17];
-                let avail = self.strings.len() - byte_offset;
-                buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
-                (u128::from_le_bytes(buf[..16].try_into().unwrap()), buf[16])
-            };
-            let shifted = if bit_shift > 0 {
-                (raw >> bit_shift) | ((extra_byte as u128) << (128 - bit_shift))
-            } else {
-                raw
-            };
-            let mask = if needed_bits >= 128 { u128::MAX } else { (1u128 << needed_bits) - 1 };
-            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u128(shifted & mask))
+                // For K=63 (needed_bits=126), when bit_shift > 2 we need more
+                // than 128 bits from the byte stream. Load u128 + extra byte.
+                let (raw, extra_byte) = if byte_offset + 17 <= self.strings.len() {
+                    let r = unsafe {
+                        std::ptr::read_unaligned(
+                            self.strings.as_ptr().add(byte_offset) as *const u128
+                        )
+                    };
+                    (r, self.strings[byte_offset + 16])
+                } else if byte_offset + 16 <= self.strings.len() {
+                    let r = unsafe {
+                        std::ptr::read_unaligned(
+                            self.strings.as_ptr().add(byte_offset) as *const u128
+                        )
+                    };
+                    let extra = if byte_offset + 16 < self.strings.len() {
+                        self.strings[byte_offset + 16]
+                    } else {
+                        0u8
+                    };
+                    (r, extra)
+                } else {
+                    let mut buf = [0u8; 17];
+                    let avail = self.strings.len() - byte_offset;
+                    buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
+                    (u128::from_le_bytes(buf[..16].try_into().unwrap()), buf[16])
+                };
+                let shifted = if bit_shift > 0 {
+                    (raw >> bit_shift) | ((extra_byte as u128) << (128 - bit_shift))
+                } else {
+                    raw
+                };
+                let mask = if needed_bits >= 128 { u128::MAX } else { (1u128 << needed_bits) - 1 };
+                Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u128(shifted & mask))
+            }
         }
     }
 
@@ -283,8 +302,10 @@ impl SpectrumPreservingStringSet {
     pub fn serialize_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&(self.k as u64).to_le_bytes())?;
         writer.write_all(&(self.m as u64).to_le_bytes())?;
-        writer.write_all(&(self.strings.len() as u64).to_le_bytes())?;
-        writer.write_all(&self.strings)?;
+        // Write logical length (exclude 8-byte padding)
+        let logical_len = self.strings.len() - 8;
+        writer.write_all(&(logical_len as u64).to_le_bytes())?;
+        writer.write_all(&self.strings[..logical_len])?;
         self.offsets.write_to(writer)?;
         Ok(())
     }
@@ -298,8 +319,8 @@ impl SpectrumPreservingStringSet {
         let m = u64::from_le_bytes(buf8) as usize;
         reader.read_exact(&mut buf8)?;
         let strings_len = u64::from_le_bytes(buf8) as usize;
-        let mut strings = vec![0u8; strings_len];
-        reader.read_exact(&mut strings)?;
+        let mut strings = vec![0u8; strings_len + 8]; // +8 padding for safe unaligned reads
+        reader.read_exact(&mut strings[..strings_len])?;
         let offsets = EliasFanoOffsets::read_from(reader)?;
         Ok(Self { strings, offsets, k, m })
     }

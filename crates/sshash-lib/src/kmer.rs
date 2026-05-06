@@ -418,7 +418,7 @@ where
     /// * `base` - 2-bit encoded base (0=A, 1=C, 3=G, 2=T)
     #[inline]
     pub fn append_base(self, base: u8) -> Self {
-        assert!(base <= 0b11, "Base value must be 0-3");
+        debug_assert!(base <= 0b11, "Base value must be 0-3");
         
         // Shift left by 2 bits
         let shifted = <Kmer<K> as KmerBits>::shl(self.bits, 2);

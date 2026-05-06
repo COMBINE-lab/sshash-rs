@@ -45,6 +45,29 @@ pub const fn encode_base(base: u8) -> Result<u8, EncodingError> {
     }
 }
 
+/// Encode a DNA base without error checking (caller must guarantee valid ACGT).
+/// Uses a lookup table for branch-free encoding.
+#[inline(always)]
+pub fn encode_base_unchecked(base: u8) -> u8 {
+    // A=0x41→0, C=0x43→1, G=0x47→3, T=0x54→2
+    // a=0x61→0, c=0x63→1, g=0x67→3, t=0x74→2
+    // Using (base >> 1) & 0x3 gives: A→0, C→1, G→3, T→2 for uppercase
+    // but doesn't work for lowercase. Use a small table instead.
+    static TABLE: [u8; 256] = {
+        let mut t = [0u8; 256];
+        t[b'A' as usize] = 0b00;
+        t[b'a' as usize] = 0b00;
+        t[b'C' as usize] = 0b01;
+        t[b'c' as usize] = 0b01;
+        t[b'G' as usize] = 0b11;
+        t[b'g' as usize] = 0b11;
+        t[b'T' as usize] = 0b10;
+        t[b't' as usize] = 0b10;
+        t
+    };
+    TABLE[base as usize]
+}
+
 /// Decode a 2-bit value to DNA nucleotide (uppercase)
 #[inline]
 pub const fn decode_base(bits: u8) -> u8 {

@@ -88,6 +88,43 @@ enum Commands {
         #[arg(short, long)]
         index: String,
     },
+
+    /// Timed streaming lookup benchmark from FASTA/FASTQ queries
+    StreamBench {
+        /// Index file
+        #[arg(short, long)]
+        index: String,
+
+        /// Query file (FASTA/FASTQ)
+        #[arg(short, long)]
+        query: String,
+    },
+
+    /// Timed point lookup benchmark (non-streaming) from FASTA/FASTQ queries
+    PointBench {
+        /// Index file
+        #[arg(short, long)]
+        index: String,
+
+        /// Query file (FASTA/FASTQ)
+        #[arg(short, long)]
+        query: String,
+    },
+
+    /// Dump per-kmer lookup results for correctness comparison
+    Dump {
+        /// Index file
+        #[arg(short, long)]
+        index: String,
+
+        /// Query file (FASTA/FASTQ)
+        #[arg(short, long)]
+        query: String,
+
+        /// Output file
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -113,6 +150,15 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Bench { index } => {
             bench_command(index)?;
+        }
+        Commands::StreamBench { index, query } => {
+            stream_bench_command(index, query)?;
+        }
+        Commands::PointBench { index, query } => {
+            point_bench_command(index, query)?;
+        }
+        Commands::Dump { index, query, output } => {
+            dump_command(index, query, output)?;
         }
     }
 
@@ -307,6 +353,194 @@ where
         println!("  log2(size) = {:.1} comparisons expected", (num_strings as f64).log2());
     }
     
+    Ok(())
+}
+
+/// Timed streaming lookup benchmark
+fn stream_bench_command(index: String, query: String) -> anyhow::Result<()> {
+
+    let index = normalize_index_path(&index);
+    info!("Loading dictionary from {}...", index);
+
+    let dict = Dictionary::load(&index)?;
+    let k = dict.k();
+    info!(
+        "Dictionary loaded (k={}, m={}, canonical={})",
+        k,
+        dict.m(),
+        dict.canonical()
+    );
+
+    info!("Loading query sequences from {}...", query);
+    let sequences = parse_fasta_file(&query)?;
+    let total_kmers: usize = sequences
+        .iter()
+        .filter(|s| s.len() >= k)
+        .map(|s| s.len() - k + 1)
+        .sum();
+    info!(
+        "Loaded {} sequences, {} k-mer positions",
+        sequences.len(),
+        total_kmers
+    );
+
+    sshash_lib::dispatch_on_k!(k, K => {
+        stream_bench_with_k::<K>(&dict, &sequences)
+    })
+}
+
+fn stream_bench_with_k<const K: usize>(
+    dict: &Dictionary,
+    sequences: &[String],
+) -> anyhow::Result<()>
+where
+    Kmer<K>: KmerBits,
+{
+    use std::time::Instant;
+
+    let k = dict.k();
+    let mut engine: StreamingQueryEngine<K> = StreamingQueryEngine::new(dict);
+
+    let num_kmers: u64 = sequences
+        .iter()
+        .filter(|s| s.len() >= k)
+        .map(|s| (s.len() - k + 1) as u64)
+        .sum();
+
+    let t_start = Instant::now();
+
+    for seq in sequences {
+        if seq.len() < k {
+            continue;
+        }
+        engine.reset();
+        let bytes = seq.as_bytes();
+        let num = seq.len() - k + 1;
+        for i in 0..num {
+            let kmer_bytes = unsafe { bytes.get_unchecked(i..i + k) };
+            engine.lookup(kmer_bytes);
+        }
+    }
+
+    let elapsed = t_start.elapsed();
+    let ns_per_kmer = elapsed.as_nanos() as f64 / num_kmers as f64;
+    let extensions = engine.num_extensions();
+    let searches = engine.num_searches();
+
+    let found = searches + extensions;
+    println!("==== streaming lookup report (sshash-rs):");
+    println!("num_kmers = {}", num_kmers);
+    println!(
+        "found_kmers = {} ({:.2}%)",
+        found,
+        if num_kmers > 0 {
+            found as f64 / num_kmers as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!("searches = {}", searches);
+    println!("extensions = {}", extensions);
+    println!(
+        "extension_ratio = {:.2}",
+        if searches > 0 {
+            extensions as f64 / searches as f64
+        } else {
+            0.0
+        }
+    );
+    println!("time_per_kmer = {:.3} ns", ns_per_kmer);
+    println!("total_time = {:.6} s", elapsed.as_secs_f64());
+
+    Ok(())
+}
+
+/// Timed point lookup benchmark (non-streaming)
+fn point_bench_command(index: String, query: String) -> anyhow::Result<()> {
+    let index = normalize_index_path(&index);
+    info!("Loading dictionary from {}...", index);
+
+    let dict = Dictionary::load(&index)?;
+    let k = dict.k();
+    info!(
+        "Dictionary loaded (k={}, m={}, canonical={})",
+        k,
+        dict.m(),
+        dict.canonical()
+    );
+
+    info!("Loading query sequences from {}...", query);
+    let sequences = parse_fasta_file(&query)?;
+    let total_kmers: usize = sequences
+        .iter()
+        .filter(|s| s.len() >= k)
+        .map(|s| s.len() - k + 1)
+        .sum();
+    info!(
+        "Loaded {} sequences, {} k-mer positions",
+        sequences.len(),
+        total_kmers
+    );
+
+    sshash_lib::dispatch_on_k!(k, K => {
+        point_bench_with_k::<K>(&dict, &sequences)
+    })
+}
+
+fn point_bench_with_k<const K: usize>(
+    dict: &Dictionary,
+    sequences: &[String],
+) -> anyhow::Result<()>
+where
+    Kmer<K>: KmerBits,
+{
+    use std::time::Instant;
+
+    let k = dict.k();
+
+    let num_kmers: u64 = sequences
+        .iter()
+        .filter(|s| s.len() >= k)
+        .map(|s| (s.len() - k + 1) as u64)
+        .sum();
+
+    let mut found: u64 = 0;
+
+    let t_start = Instant::now();
+
+    for seq in sequences {
+        if seq.len() < k {
+            continue;
+        }
+        let bytes = seq.as_bytes();
+        let num = seq.len() - k + 1;
+        for i in 0..num {
+            let kmer_bytes = unsafe { bytes.get_unchecked(i..i + k) };
+            let kmer = Kmer::<K>::from_ascii_unchecked(kmer_bytes);
+            let result = dict.query::<K>(&kmer);
+            if result.is_found() {
+                found += 1;
+            }
+        }
+    }
+
+    let elapsed = t_start.elapsed();
+    let ns_per_kmer = elapsed.as_nanos() as f64 / num_kmers as f64;
+
+    println!("==== point-lookup report (sshash-rs):");
+    println!("num_kmers = {}", num_kmers);
+    println!(
+        "found_kmers = {} ({:.2}%)",
+        found,
+        if num_kmers > 0 {
+            found as f64 / num_kmers as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!("time_per_kmer = {:.3} ns", ns_per_kmer);
+    println!("total_time = {:.6} s", elapsed.as_secs_f64());
+
     Ok(())
 }
 
@@ -724,7 +958,7 @@ fn parse_kmer_file(path: &str) -> anyhow::Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut kmers = Vec::new();
-    
+
     for line in reader.lines() {
         let line = line?;
         let kmer = line.trim().to_uppercase();
@@ -732,6 +966,78 @@ fn parse_kmer_file(path: &str) -> anyhow::Result<Vec<String>> {
             kmers.push(kmer);
         }
     }
-    
+
     Ok(kmers)
+}
+
+/// Dump per-kmer results for both point and streaming queries
+fn dump_command(index: String, query: String, output: String) -> anyhow::Result<()> {
+    let index = normalize_index_path(&index);
+    let dict = Dictionary::load(&index)?;
+    let k = dict.k();
+
+    sshash_lib::dispatch_on_k!(k, K => {
+        dump_with_k::<K>(&dict, &query, &output)
+    })
+}
+
+fn dump_with_k<const K: usize>(
+    dict: &Dictionary,
+    query: &str,
+    output: &str,
+) -> anyhow::Result<()>
+where
+    Kmer<K>: KmerBits,
+{
+    use std::io::Write;
+
+    let k = dict.k();
+    let sequences = parse_fasta_file(query)?;
+    let mut engine: StreamingQueryEngine<K> = StreamingQueryEngine::new(dict);
+
+    let mut out = std::io::BufWriter::new(File::create(output)?);
+
+    writeln!(out, "seq_idx\tkmer_pos\tpoint_kmer_id\tpoint_string_id\tpoint_orient\tstream_kmer_id\tstream_string_id\tstream_orient")?;
+
+    for (seq_idx, seq) in sequences.iter().enumerate() {
+        if seq.len() < k {
+            continue;
+        }
+        engine.reset();
+        for i in 0..=(seq.len() - k) {
+            let kmer_str = &seq[i..i + k];
+            let kmer_bytes = kmer_str.as_bytes();
+
+            // Point query
+            let point_result = if let Ok(kmer) = Kmer::<K>::from_string(kmer_str) {
+                dict.query(&kmer)
+            } else {
+                LookupResult::not_found()
+            };
+
+            // Streaming query
+            let stream_result = engine.lookup(kmer_bytes);
+
+            writeln!(
+                out,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                seq_idx,
+                i,
+                point_result.kmer_id,
+                point_result.string_id,
+                point_result.kmer_orientation as u8,
+                stream_result.kmer_id,
+                stream_result.string_id,
+                stream_result.kmer_orientation as u8,
+            )?;
+        }
+    }
+
+    let stats = engine.stats();
+    eprintln!(
+        "Dump complete: searches={} extensions={} invalid={}",
+        stats.num_searches, stats.num_extensions, stats.num_invalid
+    );
+
+    Ok(())
 }
