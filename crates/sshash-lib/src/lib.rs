@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 
 pub mod constants;
+pub(crate) mod darray;
 pub mod encoding;
 pub mod hasher;
 pub mod kmer;

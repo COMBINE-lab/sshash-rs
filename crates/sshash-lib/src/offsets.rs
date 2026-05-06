@@ -203,39 +203,34 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// Elias-Fano encoded offsets (sux-rs)
+// Elias-Fano encoded offsets (sux-rs for serialization, DArray for queries)
 // ---------------------------------------------------------------------------
 
 use sux::dict::elias_fano::{EliasFanoBuilder, EfSeqDict};
 use sux::traits::IndexedSeq;
-use mem_dbg::{MemSize, SizeFlags};
 
-/// Elias-Fano encoded offsets for compact, fast string boundary lookups.
+use crate::darray::DArray;
+
+/// Elias-Fano encoded offsets with DArray-accelerated access and locate.
 ///
-/// Uses sux-rs `EfSeqDict` which provides:
-/// - O(1) random access via `get_unchecked(i)` (uses Select1)
-/// - O(1) successor query via `succ(x)` (uses Select0)
-/// - Bidirectional iterator from successor via `iter_bidi_from_succ(x)`:
-///   `next()`/`prev()` use `select_in_word` (single CPU instruction) for
-///   cheap adjacent-element access without full Select1 inventory lookup.
+/// On disk: sux-rs `EfSeqDict` (backward-compatible format).
+/// In memory: custom Elias-Fano with DArray Select1 (for access) and
+/// DArray Select0 (for locate/successor queries).
 ///
-/// This closely matches the C++ `endpoints_sequence` data structure used by SSHash.
-///
-/// Space usage is approximately `2 + log(U/N)` bits per element (Elias-Fano bound),
-/// compared to 64 bits per element for `Vec<u64>`.
-///
-/// Hot-path operations use a pre-decoded `Vec<u64>` with a sampled hint
-/// table for near-O(1) locate queries. The hint table maps value-space
-/// blocks to array indices, reducing locate from O(log N) binary search
-/// to O(1) table lookup + ~4 element linear scan. The EF representation
-/// is kept only for serialization.
+/// Space: ~2 + log(U/N) bits per element (EF low bits) + ~1.5625 bits per
+/// element (DArray overhead). For gencode (1.08M strings, 95M universe):
+/// ~1.3 MB total vs ~9.7 MB for pre-decoded Vec.
 pub struct EliasFanoOffsets {
     ef: EfSeqDict,
-    decoded: Vec<u64>,
-    /// hint[v >> shift] = first index j where decoded[j] > v_block_start.
-    /// Used to narrow locate queries to a small range.
-    hints: Vec<u32>,
-    shift: u32,
+    num_values: usize,
+    low_bit_width: u32,
+    low_bits: Vec<u64>,
+    high_bits: Vec<u64>,
+    #[allow(dead_code)]
+    high_bits_len: usize,
+    num_high_zeros: usize,
+    darray1: DArray,
+    darray0: DArray,
 }
 
 impl EliasFanoOffsets {
@@ -247,14 +242,12 @@ impl EliasFanoOffsets {
         for &v in offsets {
             builder.push(v as usize);
         }
-        let decoded = offsets.to_vec();
-        let (hints, shift) = Self::build_hints(&decoded);
-        Self {
-            ef: builder.build_with_seq_and_dict(),
-            decoded,
-            hints,
-            shift,
-        }
+        let ef = builder.build_with_seq_and_dict();
+
+        let (num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0) =
+            Self::build_darray_ef(offsets);
+
+        Self { ef, num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 }
     }
 
     /// Build from an `OffsetsVector` (consumes it).
@@ -271,80 +264,113 @@ impl EliasFanoOffsets {
         v
     }
 
-    /// Build a hint table: hints[b] = first index j such that decoded[j] >= b * block_size.
-    /// Block size chosen so that average occupancy per block is ~4 elements.
-    fn build_hints(decoded: &[u64]) -> (Vec<u32>, u32) {
-        let n = decoded.len();
-        if n < 2 {
-            return (vec![0], 0);
+    fn build_darray_ef(values: &[u64]) -> (usize, u32, Vec<u64>, Vec<u64>, usize, usize, DArray, DArray) {
+        let n = values.len();
+        if n == 0 {
+            let empty_bv = vec![0u64; 2];
+            let da1 = DArray::build(&empty_bv, 0, false);
+            let da0 = DArray::build(&empty_bv, 0, true);
+            return (0, 0, Vec::new(), empty_bv, 0, 0, da1, da0);
         }
-        let universe = *decoded.last().unwrap();
-        // Target ~4 elements per block → num_blocks ≈ N/4
-        let num_blocks = (n / 4).max(1);
-        let block_size = (universe / num_blocks as u64).max(1);
-        let shift = (64 - block_size.leading_zeros()).saturating_sub(1).max(1);
-        let actual_block_size = 1u64 << shift;
-        let table_size = (universe >> shift) as usize + 2;
 
-        let mut hints = Vec::with_capacity(table_size);
-        let mut j = 0usize;
-        for b in 0..table_size {
-            let threshold = (b as u64) * actual_block_size;
-            while j < n && decoded[j] < threshold {
-                j += 1;
+        let max_val = values[n - 1];
+
+        let low_bit_width = if n <= 1 || max_val == 0 {
+            0
+        } else {
+            let ratio = (max_val + 1) / n as u64;
+            if ratio == 0 { 0 } else { 63 - ratio.leading_zeros() }
+        };
+
+        let low_mask = if low_bit_width > 0 { (1u64 << low_bit_width) - 1 } else { 0 };
+
+        // Pack low bits
+        let total_low_bits = n as u64 * low_bit_width as u64;
+        let low_words = ((total_low_bits + 63) / 64) as usize;
+        let mut low_bits = vec![0u64; low_words];
+        if low_bit_width > 0 {
+            for (i, &v) in values.iter().enumerate() {
+                set_packed_bits(&mut low_bits, i, low_bit_width, v & low_mask);
             }
-            hints.push(j as u32);
         }
 
-        (hints, shift)
+        // Build high bitvector
+        let max_high = max_val >> low_bit_width;
+        let high_bits_len = n + max_high as usize;
+        let high_words = high_bits_len / 64 + 2; // +2 for scan padding
+        let mut high_bits = vec![0u64; high_words];
+
+        for (i, &v) in values.iter().enumerate() {
+            let high = (v >> low_bit_width) as usize;
+            let bit_pos = high + i;
+            high_bits[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+        }
+
+        let num_high_zeros = max_high as usize;
+        let darray1 = DArray::build(&high_bits, high_bits_len, false);
+        let darray0 = DArray::build(&high_bits, high_bits_len, true);
+
+        (n, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0)
     }
 
+    #[inline(always)]
+    fn get_low_bits(&self, i: usize) -> u64 {
+        if self.low_bit_width == 0 {
+            return 0;
+        }
+        let bit_pos = i as u64 * self.low_bit_width as u64;
+        let word_idx = (bit_pos >> 6) as usize;
+        let bit_offset = (bit_pos & 63) as u32;
+        let mask = (1u64 << self.low_bit_width) - 1;
+        let mut value = (self.low_bits[word_idx] >> bit_offset) & mask;
+        if bit_offset + self.low_bit_width > 64 {
+            let overflow_bits = bit_offset + self.low_bit_width - 64;
+            value |= (self.low_bits[word_idx + 1] & ((1u64 << overflow_bits) - 1))
+                << (self.low_bit_width - overflow_bits);
+        }
+        value
+    }
+
+    /// Get the offset at index `i`.
     #[inline]
     pub fn access(&self, i: usize) -> u64 {
-        self.decoded[i]
-    }
-
-    /// Find the first index > pos within hints-narrowed range.
-    #[inline(always)]
-    fn successor_index(&self, pos: u64) -> usize {
-        let data = self.decoded.as_slice();
-        let n = data.len();
-
-        let bucket = (pos >> self.shift) as usize;
-        let lo = if bucket < self.hints.len() {
-            let h = self.hints[bucket] as usize;
-            if h > 0 { h - 1 } else { 0 }
-        } else {
-            n
-        };
-        let hi = if bucket + 1 < self.hints.len() {
-            (self.hints[bucket + 1] as usize + 1).min(n)
-        } else {
-            n
-        };
-
-        let mut idx = lo;
-        while idx < hi && data[idx] <= pos {
-            idx += 1;
-        }
-        idx
+        debug_assert!(i < self.num_values);
+        let high = self.darray1.select(&self.high_bits, i as u64, false) - i as u64;
+        let low = self.get_low_bits(i);
+        (high << self.low_bit_width) | low
     }
 
     /// Locate which string contains a given absolute position, returning
     /// `(string_id, string_begin, string_end)`.
     #[inline]
     pub fn locate_with_end(&self, pos: u64) -> Option<(u64, u64, u64)> {
-        let n = self.decoded.len();
+        let n = self.num_values;
         if n < 2 {
             return None;
         }
-        let idx = self.successor_index(pos);
+
+        let h = pos >> self.low_bit_width;
+
+        let start = if h == 0 {
+            0
+        } else if (h - 1) < self.num_high_zeros as u64 {
+            let s0 = self.darray0.select(&self.high_bits, h - 1, true);
+            (s0 + 1 - h) as usize
+        } else {
+            return None;
+        };
+
+        let mut idx = start;
+        while idx < n && self.access(idx) <= pos {
+            idx += 1;
+        }
+
         if idx == 0 {
             return None;
         }
         let string_id = idx - 1;
         if string_id + 1 < n {
-            Some((string_id as u64, self.decoded[string_id], self.decoded[string_id + 1]))
+            Some((string_id as u64, self.access(string_id), self.access(string_id + 1)))
         } else {
             None
         }
@@ -353,42 +379,67 @@ impl EliasFanoOffsets {
     /// Locate which string contains a given absolute position.
     #[inline]
     pub fn locate(&self, pos: u64) -> Option<(u64, u64)> {
-        let n = self.decoded.len();
+        let n = self.num_values;
         if n < 2 {
             return None;
         }
-        let idx = self.successor_index(pos);
+
+        let h = pos >> self.low_bit_width;
+
+        let start = if h == 0 {
+            0
+        } else if (h - 1) < self.num_high_zeros as u64 {
+            let s0 = self.darray0.select(&self.high_bits, h - 1, true);
+            (s0 + 1 - h) as usize
+        } else {
+            return None;
+        };
+
+        let mut idx = start;
+        while idx < n && self.access(idx) <= pos {
+            idx += 1;
+        }
+
         if idx == 0 {
             return None;
         }
         let string_id = idx - 1;
         if string_id + 1 < n {
-            Some((string_id as u64, self.decoded[string_id]))
+            Some((string_id as u64, self.access(string_id)))
         } else {
             None
         }
     }
 
+    /// Get the number of offsets.
     #[inline]
     pub fn len(&self) -> usize {
-        self.decoded.len()
+        self.num_values
     }
 
+    /// Check if the vector is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.decoded.is_empty()
+        self.num_values == 0
     }
 
+    /// Get the in-memory size in bytes (DArray representation).
     #[inline]
     pub fn num_bytes(&self) -> u64 {
-        self.ef.mem_size(SizeFlags::default()) as u64
+        let low = self.low_bits.len() * 8;
+        let high = self.high_bits.len() * 8;
+        let da1 = self.darray1.heap_bytes();
+        let da0 = self.darray0.heap_bytes();
+        (low + high + da1 + da0) as u64
     }
 
+    /// Get the in-memory size in bits.
     #[inline]
     pub fn num_bits(&self) -> u64 {
         self.num_bytes() * 8
     }
 
+    /// Serialize the EF representation to a writer.
     pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         unsafe {
             self.ef.serialize(writer)
@@ -397,22 +448,38 @@ impl EliasFanoOffsets {
         Ok(())
     }
 
+    /// Deserialize from a reader (reads sux-rs EfSeqDict, builds DArray at load time).
     pub fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let ef = unsafe {
             EfSeqDict::deserialize_full(reader)
                 .map_err(std::io::Error::other)?
         };
         let decoded = Self::decode_ef(&ef);
-        let (hints, shift) = Self::build_hints(&decoded);
-        Ok(Self { ef, decoded, hints, shift })
+        let (num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0) =
+            Self::build_darray_ef(&decoded);
+        Ok(Self { ef, num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 })
     }
 }
 
 impl std::fmt::Debug for EliasFanoOffsets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EliasFanoOffsets")
-            .field("len", &self.ef.len())
+            .field("len", &self.num_values)
+            .field("low_bit_width", &self.low_bit_width)
+            .field("darray_bytes", &self.num_bytes())
             .finish()
+    }
+}
+
+#[inline]
+fn set_packed_bits(words: &mut [u64], index: usize, width: u32, value: u64) {
+    let bit_pos = index as u64 * width as u64;
+    let word_idx = (bit_pos >> 6) as usize;
+    let bit_offset = (bit_pos & 63) as u32;
+    words[word_idx] |= value << bit_offset;
+    if bit_offset + width > 64 {
+        let overflow_bits = bit_offset + width - 64;
+        words[word_idx + 1] |= value >> (width - overflow_bits);
     }
 }
 
