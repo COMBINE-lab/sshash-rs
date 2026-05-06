@@ -270,7 +270,7 @@ impl TinyDictionary {
     /// k-mer matches the SPSS-stored forward k-mer, `-1` when it matches the
     /// reverse complement.
     #[inline]
-    fn lookup_core<const K: usize>(&self, kmer_bytes: &[u8]) -> Option<(u32, u32, i8)>
+    fn lookup_core<const K: usize>(&self, kmer_bytes: &[u8]) -> Option<(u32, u32, i64)>
     where
         Kmer<K>: KmerBits,
     {
@@ -284,12 +284,12 @@ impl TinyDictionary {
 
     /// Bit-level core lookup: caller has already parsed and canonicalized.
     #[inline]
-    fn lookup_core_bits(&self, canon_bits: u64, query_fw_is_canonical: bool) -> Option<(u32, u32, i8)> {
+    fn lookup_core_bits(&self, canon_bits: u64, query_fw_is_canonical: bool) -> Option<(u32, u32, i64)> {
         let packed = *self.index.get(&canon_bits)?;
         let string_id = unpack_string_id(packed);
         let kmer_id = unpack_kmer_id(packed);
         let spss_is_canonical = unpack_spss_is_canonical(packed);
-        let orientation: i8 = if spss_is_canonical == query_fw_is_canonical {
+        let orientation: i64 = if spss_is_canonical == query_fw_is_canonical {
             1
         } else {
             -1
@@ -323,7 +323,7 @@ impl TinyDictionary {
     }
 
     #[inline]
-    fn finish_lookup<const K: usize>(&self, core: Option<(u32, u32, i8)>) -> LookupResult
+    fn finish_lookup<const K: usize>(&self, core: Option<(u32, u32, i64)>) -> LookupResult
     where
         Kmer<K>: KmerBits,
     {
@@ -365,7 +365,7 @@ struct Anchor {
     string_end: u64,
     /// +1 when SPSS-fw at `(string_id, kmer_pos_in_string)` equals query-fw,
     /// -1 when SPSS-fw equals query-rc.
-    orientation: i8,
+    orientation: i64,
 }
 
 /// Streaming query engine for [`TinyDictionary`] with single-unitig

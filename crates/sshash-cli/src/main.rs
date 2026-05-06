@@ -997,7 +997,7 @@ where
 
     let mut out = std::io::BufWriter::new(File::create(output)?);
 
-    writeln!(out, "seq_idx\tkmer_pos\tpoint_kmer_id\tpoint_string_id\tpoint_orient\tstream_kmer_id\tstream_string_id\tstream_orient")?;
+    writeln!(out, "seq_idx\tkmer_pos\tkmer_id\tstring_id\tkmer_id_in_string\tkmer_orientation")?;
 
     for (seq_idx, seq) in sequences.iter().enumerate() {
         if seq.len() < k {
@@ -1005,38 +1005,30 @@ where
         }
         engine.reset();
         for i in 0..=(seq.len() - k) {
-            let kmer_str = &seq[i..i + k];
-            let kmer_bytes = kmer_str.as_bytes();
-
-            // Point query
-            let point_result = if let Ok(kmer) = Kmer::<K>::from_string(kmer_str) {
-                dict.query(&kmer)
-            } else {
-                LookupResult::not_found()
-            };
-
-            // Streaming query
-            let stream_result = engine.lookup(kmer_bytes);
+            let kmer_bytes = seq[i..i + k].as_bytes();
+            let res = engine.lookup(kmer_bytes);
 
             writeln!(
                 out,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}",
                 seq_idx,
                 i,
-                point_result.kmer_id,
-                point_result.string_id,
-                point_result.kmer_orientation as u8,
-                stream_result.kmer_id,
-                stream_result.string_id,
-                stream_result.kmer_orientation as u8,
+                res.kmer_id,
+                res.string_id,
+                res.kmer_id_in_string,
+                res.kmer_orientation,
             )?;
         }
     }
 
     let stats = engine.stats();
     eprintln!(
-        "Dump complete: searches={} extensions={} invalid={}",
-        stats.num_searches, stats.num_extensions, stats.num_invalid
+        "Dump complete: positive={} negative={} invalid={} searches={} extensions={}",
+        stats.num_searches + stats.num_extensions,
+        stats.num_negative,
+        stats.num_invalid,
+        stats.num_searches,
+        stats.num_extensions,
     );
 
     Ok(())

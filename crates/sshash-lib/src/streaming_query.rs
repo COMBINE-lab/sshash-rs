@@ -22,7 +22,7 @@ pub struct LookupResult {
     /// Bit offset into the string data
     pub kmer_offset: u64,
     /// Orientation: +1 for forward, -1 for reverse complement
-    pub kmer_orientation: i8,
+    pub kmer_orientation: i64,
     
     /// String ID containing this k-mer
     pub string_id: u64,
@@ -92,7 +92,7 @@ pub struct StreamingQuery<const K: usize>
 where
     Kmer<K>: KmerBits,
 {
-    k: usize,
+    _k: usize,
     _m: usize,
     _canonical: bool,
 
@@ -139,11 +139,11 @@ where
     /// * `canonical` - Whether to use canonical k-mers (min of forward/RC)
     pub fn new(k: usize, m: usize, canonical: bool) -> Self {
         assert_eq!(k, K, "k parameter must match const generic K");
-        
+
         let dummy_mini = MinimizerInfo::new(u64::MAX, 0, 0);
-        
+
         Self {
-            k,
+            _k: k,
             _m: m,
             _canonical: canonical,
             start: true,
@@ -197,26 +197,22 @@ where
     /// so callers can manage the dictionary's lifetime independently (e.g. via `Arc`).
     #[inline(always)]
     pub fn lookup_with_dict(&mut self, kmer_bytes: &[u8], dict: &crate::dictionary::Dictionary) -> LookupResult {
-        // 1. Validation
-        let is_valid = if self.start {
-            self.is_valid_kmer_bytes(kmer_bytes)
-        } else {
-            let last_base = unsafe { *kmer_bytes.get_unchecked(self.k - 1) };
-            self.is_valid_base(last_base)
-        };
-
-        if !is_valid {
-            self.num_invalid += 1;
-            self.reset();
-            return self.result;
-        }
-
-        // 2. Compute k-mer and reverse complement, update minimizers
+        // 1. Validation + 2. Compute k-mer and reverse complement
         if self.start {
+            if !self.is_valid_kmer_bytes(kmer_bytes) {
+                self.num_invalid += 1;
+                self.reset();
+                return self.result;
+            }
             self.kmer = Kmer::<K>::from_ascii_unchecked(kmer_bytes);
             self.kmer_rc = self.kmer.reverse_complement();
         } else {
-            let last_base = unsafe { *kmer_bytes.get_unchecked(self.k - 1) };
+            let last_base = unsafe { *kmer_bytes.get_unchecked(K - 1) };
+            if !self.is_valid_base(last_base) {
+                self.num_invalid += 1;
+                self.reset();
+                return self.result;
+            }
             let encoded = crate::encoding::encode_base_unchecked(last_base);
             self.kmer = self.kmer.roll_right_base(encoded);
             let complement = crate::encoding::complement_base(encoded);
@@ -247,7 +243,7 @@ where
         let is_valid = if self.start {
             self.is_valid_kmer_bytes(kmer_bytes)
         } else {
-            let last_base = unsafe { *kmer_bytes.get_unchecked(self.k - 1) };
+            let last_base = unsafe { *kmer_bytes.get_unchecked(K - 1) };
             self.is_valid_base(last_base)
         };
 
@@ -262,7 +258,7 @@ where
             self.kmer = Kmer::<K>::from_ascii_unchecked(kmer_bytes);
             self.kmer_rc = self.kmer.reverse_complement();
         } else {
-            let last_base = unsafe { *kmer_bytes.get_unchecked(self.k - 1) };
+            let last_base = unsafe { *kmer_bytes.get_unchecked(K - 1) };
             let encoded = crate::encoding::encode_base_unchecked(last_base);
             self.kmer = self.kmer.roll_right_base(encoded);
             let complement = crate::encoding::complement_base(encoded);
@@ -293,7 +289,7 @@ where
 
     /// Validate a full k-mer byte slice
     fn is_valid_kmer_bytes(&self, bytes: &[u8]) -> bool {
-        if bytes.len() != self.k {
+        if bytes.len() != K {
             return false;
         }
         for &b in bytes {
@@ -366,13 +362,12 @@ where
             let string_size = self.result.string_end - self.result.string_begin;
             if self.result.kmer_orientation > 0 {
                 self.remaining_string_bases =
-                    (string_size - self.k as u64) - self.result.kmer_id_in_string;
+                    (string_size - K as u64) - self.result.kmer_id_in_string;
             } else {
                 self.remaining_string_bases = self.result.kmer_id_in_string;
             }
-            // Position buffer at current kmer location
             self.buf_bit_pos = self.result.string_begin + self.result.kmer_id_in_string;
-            self.buf_avail = 0; // force reload on first extension
+            self.buf_avail = 0;
         } else {
             self.result = LookupResult::not_found();
             self.num_negative += 1;
@@ -433,7 +428,7 @@ where
         let string_size = self.result.string_end - self.result.string_begin;
         if self.result.kmer_orientation > 0 {
             self.remaining_string_bases =
-                (string_size - self.k as u64) - self.result.kmer_id_in_string;
+                (string_size - K as u64) - self.result.kmer_id_in_string;
         } else {
             self.remaining_string_bases = self.result.kmer_id_in_string;
         }
@@ -442,47 +437,36 @@ where
     }
 
     /// Try to extend within the current string using buffered SPSS reader.
-    ///
-    /// The buffer holds a 64-bit window into the SPSS string data. On each
-    /// forward extension we shift by 2 bits. When buffer runs low we reload.
-    /// For backward extensions we decrement and reload as needed.
     #[inline(always)]
     fn try_extend(&mut self, dict: &crate::dictionary::Dictionary) {
         let kmer_bits = (K * 2) as u32;
-        let expected_bits: u64;
 
-        if self.result.kmer_orientation > 0 {
-            // Forward extension
+        let expected_bits = if self.result.kmer_orientation > 0 {
             self.buf_bit_pos += 1;
             if self.buf_avail >= kmer_bits + 2 {
-                // Have enough bits: just shift
                 self.buf >>= 2;
                 self.buf_avail -= 2;
-                let mask = (1u64 << kmer_bits) - 1;
-                expected_bits = self.buf & mask;
+                self.buf & ((1u64 << kmer_bits) - 1)
             } else {
-                // Refill from SPSS at current position
-                expected_bits = self.load_kmer_at(dict, self.buf_bit_pos as usize);
+                self.load_kmer_at(dict, self.buf_bit_pos as usize)
             }
         } else {
-            // Backward extension
             self.buf_bit_pos -= 1;
-            expected_bits = self.load_kmer_at(dict, self.buf_bit_pos as usize);
-        }
+            self.load_kmer_at(dict, self.buf_bit_pos as usize)
+        };
 
         let kmer_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer.bits());
         let kmer_rc_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer_rc.bits());
         if expected_bits == kmer_u64 || expected_bits == kmer_rc_u64 {
             self.num_extensions += 1;
-            let delta = self.result.kmer_orientation as i64;
-            self.result.kmer_id = (self.result.kmer_id as i64 + delta) as u64;
+            let ori = self.result.kmer_orientation;
+            self.result.kmer_id = (self.result.kmer_id as i64 + ori) as u64;
             self.result.kmer_id_in_string =
-                (self.result.kmer_id_in_string as i64 + delta) as u64;
+                (self.result.kmer_id_in_string as i64 + ori) as u64;
             self.remaining_string_bases -= 1;
             return;
         }
 
-        // Extension failed, do a full search
         self.seed_with_dict(dict);
     }
 
@@ -559,7 +543,7 @@ mod tests {
     #[test]
     fn test_streaming_query_creation() {
         let query: StreamingQuery<31> = StreamingQuery::new(31, 13, true);
-        assert_eq!(query.k, 31);
+        assert_eq!(query._k, 31);
         assert_eq!(query._m, 13);
         assert!(query._canonical);
         assert_eq!(query.num_searches(), 0);

@@ -207,8 +207,7 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 use sux::dict::elias_fano::{EliasFanoBuilder, EfSeqDict};
-use sux::traits::{IndexedSeq, Succ};
-use sux::traits::iter::BidiIterator;
+use sux::traits::IndexedSeq;
 use mem_dbg::{MemSize, SizeFlags};
 
 /// Elias-Fano encoded offsets for compact, fast string boundary lookups.
@@ -224,9 +223,19 @@ use mem_dbg::{MemSize, SizeFlags};
 ///
 /// Space usage is approximately `2 + log(U/N)` bits per element (Elias-Fano bound),
 /// compared to 64 bits per element for `Vec<u64>`.
+///
+/// Hot-path operations use a pre-decoded `Vec<u64>` with a sampled hint
+/// table for near-O(1) locate queries. The hint table maps value-space
+/// blocks to array indices, reducing locate from O(log N) binary search
+/// to O(1) table lookup + ~4 element linear scan. The EF representation
+/// is kept only for serialization.
 pub struct EliasFanoOffsets {
-    /// Elias-Fano sequence for compact access and locate
     ef: EfSeqDict,
+    decoded: Vec<u64>,
+    /// hint[v >> shift] = first index j where decoded[j] > v_block_start.
+    /// Used to narrow locate queries to a small range.
+    hints: Vec<u32>,
+    shift: u32,
 }
 
 impl EliasFanoOffsets {
@@ -238,7 +247,14 @@ impl EliasFanoOffsets {
         for &v in offsets {
             builder.push(v as usize);
         }
-        Self { ef: builder.build_with_seq_and_dict() }
+        let decoded = offsets.to_vec();
+        let (hints, shift) = Self::build_hints(&decoded);
+        Self {
+            ef: builder.build_with_seq_and_dict(),
+            decoded,
+            hints,
+            shift,
+        }
     }
 
     /// Build from an `OffsetsVector` (consumes it).
@@ -246,111 +262,133 @@ impl EliasFanoOffsets {
         Self::from_vec(&ov.offsets)
     }
 
-    /// Get the offset at index `i`.
+    fn decode_ef(ef: &EfSeqDict) -> Vec<u64> {
+        let n = ef.len();
+        let mut v = Vec::with_capacity(n);
+        for i in 0..n {
+            v.push(unsafe { ef.get_unchecked(i) as u64 });
+        }
+        v
+    }
+
+    /// Build a hint table: hints[b] = first index j such that decoded[j] >= b * block_size.
+    /// Block size chosen so that average occupancy per block is ~4 elements.
+    fn build_hints(decoded: &[u64]) -> (Vec<u32>, u32) {
+        let n = decoded.len();
+        if n < 2 {
+            return (vec![0], 0);
+        }
+        let universe = *decoded.last().unwrap();
+        // Target ~4 elements per block → num_blocks ≈ N/4
+        let num_blocks = (n / 4).max(1);
+        let block_size = (universe / num_blocks as u64).max(1);
+        let shift = (64 - block_size.leading_zeros()).saturating_sub(1).max(1);
+        let actual_block_size = 1u64 << shift;
+        let table_size = (universe >> shift) as usize + 2;
+
+        let mut hints = Vec::with_capacity(table_size);
+        let mut j = 0usize;
+        for b in 0..table_size {
+            let threshold = (b as u64) * actual_block_size;
+            while j < n && decoded[j] < threshold {
+                j += 1;
+            }
+            hints.push(j as u32);
+        }
+
+        (hints, shift)
+    }
+
     #[inline]
     pub fn access(&self, i: usize) -> u64 {
-        // SAFETY: caller must ensure i < self.len().
-        unsafe { self.ef.get_unchecked(i) as u64 }
+        self.decoded[i]
+    }
+
+    /// Find the first index > pos within hints-narrowed range.
+    #[inline(always)]
+    fn successor_index(&self, pos: u64) -> usize {
+        let data = self.decoded.as_slice();
+        let n = data.len();
+
+        let bucket = (pos >> self.shift) as usize;
+        let lo = if bucket < self.hints.len() {
+            let h = self.hints[bucket] as usize;
+            if h > 0 { h - 1 } else { 0 }
+        } else {
+            n
+        };
+        let hi = if bucket + 1 < self.hints.len() {
+            (self.hints[bucket + 1] as usize + 1).min(n)
+        } else {
+            n
+        };
+
+        let mut idx = lo;
+        while idx < hi && data[idx] <= pos {
+            idx += 1;
+        }
+        idx
     }
 
     /// Locate which string contains a given absolute position, returning
     /// `(string_id, string_begin, string_end)`.
-    ///
-    /// Uses sux-rs `iter_bidi_from_succ()` to find the successor, then
-    /// cheap `next()`/`prev()` calls (single-instruction bit scans) to
-    /// read adjacent elements without full Select1 inventory lookups.
     #[inline]
     pub fn locate_with_end(&self, pos: u64) -> Option<(u64, u64, u64)> {
-        let n = self.ef.len();
+        let n = self.decoded.len();
         if n < 2 {
             return None;
         }
-
-        // iter_bidi_from_succ returns (index, positioned_iterator) for the
-        // first element >= pos. The first next() yields the successor value.
-        let (idx, mut iter) = self.ef.iter_bidi_from_succ(pos as usize)?;
-
-        // Get the successor value (cheap: reads from cached word).
-        let val = iter.next()?;
-
-        if val == pos as usize {
-            // Exact hit: pos is at a string boundary → string_id = idx.
-            // Need the NEXT element for string_end (cheap bit scan forward).
-            if idx + 1 < n {
-                let end = iter.next()? as u64;
-                Some((idx as u64, pos, end))
-            } else {
-                None
-            }
+        let idx = self.successor_index(pos);
+        if idx == 0 {
+            return None;
+        }
+        let string_id = idx - 1;
+        if string_id + 1 < n {
+            Some((string_id as u64, self.decoded[string_id], self.decoded[string_id + 1]))
         } else {
-            // val > pos → string containing pos starts at idx-1.
-            // val IS the end of this string. Need begin = offsets[idx-1].
-            // prev() undoes the next(), then prev() again gets offsets[idx-1].
-            // Both use select_in_word (single CPU instruction per call).
-            debug_assert!(idx > 0);
-            iter.prev(); // back to idx (returns val, discarded)
-            let begin = iter.prev()? as u64; // offsets[idx-1]
-            Some(((idx - 1) as u64, begin, val as u64))
+            None
         }
     }
 
     /// Locate which string contains a given absolute position.
-    /// Returns `(string_id, string_begin)` where
-    /// `offsets[string_id] <= pos < offsets[string_id + 1]`.
-    ///
-    /// Uses `iter_bidi_from_succ()` + cheap `prev()` bit scans
-    /// instead of full Select1 for adjacent element access.
     #[inline]
     pub fn locate(&self, pos: u64) -> Option<(u64, u64)> {
-        let n = self.ef.len();
+        let n = self.decoded.len();
         if n < 2 {
             return None;
         }
-
-        let (idx, mut iter) = self.ef.iter_bidi_from_succ(pos as usize)?;
-        let val = iter.next()?;
-
-        if val == pos as usize {
-            // Exact hit: string_id = idx, but only if there's a next element
-            if idx + 1 < n {
-                Some((idx as u64, pos))
-            } else {
-                None
-            }
+        let idx = self.successor_index(pos);
+        if idx == 0 {
+            return None;
+        }
+        let string_id = idx - 1;
+        if string_id + 1 < n {
+            Some((string_id as u64, self.decoded[string_id]))
         } else {
-            // val > pos: string containing pos starts at idx - 1
-            debug_assert!(idx > 0);
-            iter.prev(); // back to idx
-            let string_begin = iter.prev()? as u64; // offsets[idx-1]
-            Some(((idx - 1) as u64, string_begin))
+            None
         }
     }
 
-    /// Number of offsets stored.
     #[inline]
     pub fn len(&self) -> usize {
-        self.ef.len()
+        self.decoded.len()
     }
 
-    /// Whether there are no offsets.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.ef.len() == 0
+        self.decoded.is_empty()
     }
 
-    /// Actual number of bytes used by the Elias-Fano index (including selection structures).
     #[inline]
     pub fn num_bytes(&self) -> u64 {
         self.ef.mem_size(SizeFlags::default()) as u64
     }
 
-    /// Actual number of bits used by the Elias-Fano index.
     #[inline]
     pub fn num_bits(&self) -> u64 {
         self.num_bytes() * 8
     }
 
-    /// Serialize the Elias-Fano offsets to a writer using epserde's binary format.
     pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         unsafe {
             self.ef.serialize(writer)
@@ -359,13 +397,14 @@ impl EliasFanoOffsets {
         Ok(())
     }
 
-    /// Deserialize Elias-Fano offsets from a reader using epserde's binary format.
     pub fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let ef = unsafe {
             EfSeqDict::deserialize_full(reader)
                 .map_err(std::io::Error::other)?
         };
-        Ok(Self { ef })
+        let decoded = Self::decode_ef(&ef);
+        let (hints, shift) = Self::build_hints(&decoded);
+        Ok(Self { ef, decoded, hints, shift })
     }
 }
 

@@ -48,7 +48,7 @@ pub struct Dictionary {
 #[derive(Clone, Copy)]
 struct LocatedHit {
     kmer_offset: u64,
-    orientation: i8,
+    orientation: i64,
     string_id: u64,
     string_begin: u64,
     string_end: u64,
@@ -129,7 +129,7 @@ impl Dictionary {
     fn query_regular<const K: usize>(
         &self,
         kmer: &Kmer<K>,
-        orientation: i8,
+        orientation: i64,
     ) -> Option<crate::streaming_query::LookupResult>
     where
         Kmer<K>: KmerBits,
@@ -252,7 +252,7 @@ impl Dictionary {
         Kmer<K>: KmerBits,
     {
         match self.lookup_canonical_located(kmer) {
-            Some(hit) => (hit.kmer_offset, hit.orientation),
+            Some(hit) => (hit.kmer_offset, hit.orientation as i8),
             None => (INVALID_UINT64, 1),
         }
     }
@@ -435,7 +435,7 @@ impl Dictionary {
         if stored_kmer.bits() == query_kmer.bits() {
             let (string_id, string_begin, string_end) = self.spss.locate_with_end(kmer_pos)?;
             if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
-                return Some(LocatedHit { kmer_offset: kmer_pos, orientation: 1, string_id, string_begin, string_end });
+                return Some(LocatedHit { kmer_offset: kmer_pos, orientation: 1i64, string_id, string_begin, string_end });
             }
         }
 
@@ -485,10 +485,10 @@ impl Dictionary {
 
         let stored_kmer = self.spss.decode_kmer_at::<K>(kmer_pos as usize);
 
-        let orientation = if stored_kmer.bits() == query_kmer.bits() {
-            1i8
+        let orientation: i64 = if stored_kmer.bits() == query_kmer.bits() {
+            1
         } else if stored_kmer.bits() == kmer_rc.bits() {
-            -1i8
+            -1
         } else {
             return None;
         };
