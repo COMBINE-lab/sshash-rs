@@ -143,6 +143,97 @@ impl DArray {
             + self.subblock_inventory.len() * std::mem::size_of::<u16>()
             + self.overflow_positions.len() * std::mem::size_of::<u64>()
     }
+
+    pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        write_u64(writer, self.num_positions)?;
+        write_vec_i64(writer, &self.block_inventory)?;
+        write_vec_u16(writer, &self.subblock_inventory)?;
+        write_vec_u64(writer, &self.overflow_positions)?;
+        Ok(())
+    }
+
+    pub fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let num_positions = read_u64(reader)?;
+        let block_inventory = read_vec_i64(reader)?;
+        let subblock_inventory = read_vec_u16(reader)?;
+        let overflow_positions = read_vec_u64(reader)?;
+        Ok(Self { num_positions, block_inventory, subblock_inventory, overflow_positions })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Little-endian serialization helpers
+// ---------------------------------------------------------------------------
+
+pub(crate) fn write_u64<W: std::io::Write>(w: &mut W, v: u64) -> std::io::Result<()> {
+    w.write_all(&v.to_le_bytes())
+}
+
+pub(crate) fn write_u32<W: std::io::Write>(w: &mut W, v: u32) -> std::io::Result<()> {
+    w.write_all(&v.to_le_bytes())
+}
+
+pub(crate) fn read_u64<R: std::io::Read>(r: &mut R) -> std::io::Result<u64> {
+    let mut buf = [0u8; 8];
+    r.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+pub(crate) fn read_u32<R: std::io::Read>(r: &mut R) -> std::io::Result<u32> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+pub(crate) fn write_vec_u64<W: std::io::Write>(w: &mut W, v: &[u64]) -> std::io::Result<()> {
+    write_u64(w, v.len() as u64)?;
+    for &x in v { w.write_all(&x.to_le_bytes())?; }
+    Ok(())
+}
+
+pub(crate) fn read_vec_u64<R: std::io::Read>(r: &mut R) -> std::io::Result<Vec<u64>> {
+    let len = read_u64(r)? as usize;
+    let mut v = Vec::with_capacity(len);
+    let mut buf = [0u8; 8];
+    for _ in 0..len {
+        r.read_exact(&mut buf)?;
+        v.push(u64::from_le_bytes(buf));
+    }
+    Ok(v)
+}
+
+fn write_vec_i64<W: std::io::Write>(w: &mut W, v: &[i64]) -> std::io::Result<()> {
+    write_u64(w, v.len() as u64)?;
+    for &x in v { w.write_all(&x.to_le_bytes())?; }
+    Ok(())
+}
+
+fn read_vec_i64<R: std::io::Read>(r: &mut R) -> std::io::Result<Vec<i64>> {
+    let len = read_u64(r)? as usize;
+    let mut v = Vec::with_capacity(len);
+    let mut buf = [0u8; 8];
+    for _ in 0..len {
+        r.read_exact(&mut buf)?;
+        v.push(i64::from_le_bytes(buf));
+    }
+    Ok(v)
+}
+
+fn write_vec_u16<W: std::io::Write>(w: &mut W, v: &[u16]) -> std::io::Result<()> {
+    write_u64(w, v.len() as u64)?;
+    for &x in v { w.write_all(&x.to_le_bytes())?; }
+    Ok(())
+}
+
+fn read_vec_u16<R: std::io::Read>(r: &mut R) -> std::io::Result<Vec<u16>> {
+    let len = read_u64(r)? as usize;
+    let mut v = Vec::with_capacity(len);
+    let mut buf = [0u8; 2];
+    for _ in 0..len {
+        r.read_exact(&mut buf)?;
+        v.push(u16::from_le_bytes(buf));
+    }
+    Ok(v)
 }
 
 /// Find the position of the k-th set bit (0-indexed) in a 64-bit word.

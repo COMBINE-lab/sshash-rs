@@ -5,11 +5,9 @@
 //!
 //! Two representations are available:
 //! - `OffsetsVector`: Plain `Vec<u64>`, used during construction
-//! - `EliasFanoOffsets`: Elias-Fano encoding via sux-rs `EfSeqDict`, used after
+//! - `EliasFanoOffsets`: Elias-Fano with DArray Select, used after
 //!   construction and during queries. Provides O(1) random access and fast
 //!   `locate()` via successor queries (matches C++ endpoints_sequence).
-
-use epserde::prelude::*;
 
 /// A decoded offset with both absolute and relative information
 #[derive(Clone, Copy, Debug)]
@@ -33,7 +31,7 @@ impl DecodedOffset {
 /// Compact vector of offsets
 ///
 /// Stores offsets using a compact representation.
-#[derive(Clone, Debug, Epserde)]
+#[derive(Clone, Debug)]
 pub struct OffsetsVector {
     /// Raw offset values
     offsets: Vec<u64>,
@@ -203,30 +201,25 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// Elias-Fano encoded offsets (sux-rs for serialization, DArray for queries)
+// Elias-Fano encoded offsets with DArray Select support
 // ---------------------------------------------------------------------------
-
-use sux::dict::elias_fano::{EliasFanoBuilder, EfSeqDict};
-use sux::traits::IndexedSeq;
 
 use crate::darray::DArray;
 
 /// Elias-Fano encoded offsets with DArray-accelerated access and locate.
 ///
-/// On disk: sux-rs `EfSeqDict` (backward-compatible format).
-/// In memory: custom Elias-Fano with DArray Select1 (for access) and
-/// DArray Select0 (for locate/successor queries).
+/// Custom Elias-Fano representation with DArray Select1 (for access) and
+/// DArray Select0 (for locate/successor queries). Serialized directly
+/// without sux-rs dependency.
 ///
 /// Space: ~2 + log(U/N) bits per element (EF low bits) + ~1.5625 bits per
 /// element (DArray overhead). For gencode (1.08M strings, 95M universe):
 /// ~1.3 MB total vs ~9.7 MB for pre-decoded Vec.
 pub struct EliasFanoOffsets {
-    ef: EfSeqDict,
     num_values: usize,
     low_bit_width: u32,
     low_bits: Vec<u64>,
     high_bits: Vec<u64>,
-    #[allow(dead_code)]
     high_bits_len: usize,
     num_high_zeros: usize,
     darray1: DArray,
@@ -236,32 +229,14 @@ pub struct EliasFanoOffsets {
 impl EliasFanoOffsets {
     /// Build from a sorted vector of offsets (must start with 0).
     pub fn from_vec(offsets: &[u64]) -> Self {
-        let n = offsets.len();
-        let u = if n > 0 { offsets[n - 1] as usize + 1 } else { 1 };
-        let mut builder = EliasFanoBuilder::new(n, u);
-        for &v in offsets {
-            builder.push(v as usize);
-        }
-        let ef = builder.build_with_seq_and_dict();
-
         let (num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0) =
             Self::build_darray_ef(offsets);
-
-        Self { ef, num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 }
+        Self { num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 }
     }
 
     /// Build from an `OffsetsVector` (consumes it).
     pub fn from_offsets_vector(ov: OffsetsVector) -> Self {
         Self::from_vec(&ov.offsets)
-    }
-
-    fn decode_ef(ef: &EfSeqDict) -> Vec<u64> {
-        let n = ef.len();
-        let mut v = Vec::with_capacity(n);
-        for i in 0..n {
-            v.push(unsafe { ef.get_unchecked(i) as u64 });
-        }
-        v
     }
 
     fn build_darray_ef(values: &[u64]) -> (usize, u32, Vec<u64>, Vec<u64>, usize, usize, DArray, DArray) {
@@ -439,25 +414,32 @@ impl EliasFanoOffsets {
         self.num_bytes() * 8
     }
 
-    /// Serialize the EF representation to a writer.
+    /// Serialize to a writer. Writes the DArray components directly.
     pub fn write_to<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        unsafe {
-            self.ef.serialize(writer)
-                .map_err(std::io::Error::other)?;
-        }
+        use crate::darray::{write_u64, write_u32, write_vec_u64};
+        write_u64(writer, self.num_values as u64)?;
+        write_u32(writer, self.low_bit_width)?;
+        write_vec_u64(writer, &self.low_bits)?;
+        write_u64(writer, self.high_bits_len as u64)?;
+        write_vec_u64(writer, &self.high_bits)?;
+        write_u64(writer, self.num_high_zeros as u64)?;
+        self.darray1.write_to(writer)?;
+        self.darray0.write_to(writer)?;
         Ok(())
     }
 
-    /// Deserialize from a reader (reads sux-rs EfSeqDict, builds DArray at load time).
+    /// Deserialize from a reader. Reads pre-built DArray components directly.
     pub fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        let ef = unsafe {
-            EfSeqDict::deserialize_full(reader)
-                .map_err(std::io::Error::other)?
-        };
-        let decoded = Self::decode_ef(&ef);
-        let (num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0) =
-            Self::build_darray_ef(&decoded);
-        Ok(Self { ef, num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 })
+        use crate::darray::{read_u64, read_u32, read_vec_u64};
+        let num_values = read_u64(reader)? as usize;
+        let low_bit_width = read_u32(reader)?;
+        let low_bits = read_vec_u64(reader)?;
+        let high_bits_len = read_u64(reader)? as usize;
+        let high_bits = read_vec_u64(reader)?;
+        let num_high_zeros = read_u64(reader)? as usize;
+        let darray1 = DArray::read_from(reader)?;
+        let darray0 = DArray::read_from(reader)?;
+        Ok(Self { num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 })
     }
 }
 
