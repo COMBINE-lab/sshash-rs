@@ -18,8 +18,8 @@ categories = ["command-line-utilities", "data-structures"]
 sshash-lib = { version = "0.5.0", path = "crates/sshash-lib" }
 tiny-dict = { version = "0.5.0", path = "crates/tiny-dict" }
 
-# Succinct data structures (git main for bidirectional EF iterator support)
-sux = { version = "0.13.1", features = ["epserde"] }
+# Succinct data structures
+sux = { version = "0.14.0", features = ["epserde"] }
 
 # Minimal perfect hashing (COMBINE-lab fork: usize::MAX instead of panic for out-of-set keys)
 #ph = { git = "https://github.com/COMBINE-lab/bsuccinct-rs.git", branch = "main", default-features = false, features = ["rapidhash"] }

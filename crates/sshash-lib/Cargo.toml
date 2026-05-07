@@ -19,7 +19,7 @@ ph = { workspace = true }
 needletail = { workspace = true }
 
 # Serialization
-epserde = "0.12" # Must match sux's epserde version (sux 0.12 uses epserde 0.12)
+epserde = "0.12.5" # Must match sux's epserde version
 
 # Error handling
 anyhow = { workspace = true }
@@ -37,11 +37,11 @@ seq-macro = { workspace = true }
 # Fast, portable hashing (CPU-feature independent — no AES-NI divergence unlike ahash)
 rapidhash = "4"
 
-# Value-based slice traits (used by sux 0.11 BitFieldVec)
+# Value-based slice traits (used by sux BitFieldVec)
 value-traits = "0.2"
 
 # Memory usage measurement (must match sux's version)
-mem_dbg = "0.4.0"
+mem_dbg = "0.4.1"
 
 # Memory mapping (for external sorting)
 memmap2 = { workspace = true }

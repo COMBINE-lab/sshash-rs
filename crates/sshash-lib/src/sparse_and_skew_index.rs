@@ -43,7 +43,7 @@ pub struct SparseAndSkewIndex {
     /// One entry per super-kmer: absolute offset (pos_in_seq) into SPSS.
     /// Entries are ordered by bucket (in MPHF order), then by position within
     /// each bucket.
-    pub offsets: BitFieldVec<usize>,
+    pub offsets: BitFieldVec,
 
     /// Skew index for heavy buckets (size > MIN_BUCKET_SIZE)
     pub skew_index: SkewIndex,
@@ -489,7 +489,7 @@ pub struct SkewIndex {
 
     /// Vector of position arrays, one per partition.
     /// `positions[i]` stores the within-bucket super-kmer index for each k-mer.
-    pub positions: Vec<BitFieldVec<usize>>,
+    pub positions: Vec<BitFieldVec>,
 }
 
 impl SkewIndex {
