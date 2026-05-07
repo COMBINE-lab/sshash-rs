@@ -25,7 +25,7 @@ struct Hit {
     /// ID of the string (unitig) that contains this k-mer
     string_id: u64,
     /// Orientation: +1 for forward strand, -1 for reverse complement
-    orientation: i8,
+    orientation: i64,
     /// Start position (in bases) of the containing string
     string_begin: u64,
     /// End position (in bases) of the containing string
