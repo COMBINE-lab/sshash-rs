@@ -111,11 +111,9 @@ where
 
     // String extension state
     remaining_string_bases: u64,
-    // Buffered SPSS reader: bit_pos is the current read position in the strings
-    // (in 2-bit units). buf holds data at bit_pos; buf_avail tracks valid bits.
-    buf: u64,
-    buf_avail: u32,
-    buf_bit_pos: u64, // current position in strings data (2-bit units)
+    buf_bit_pos: u64, // current k-mer position in strings data (base units)
+    buf: u64,         // buffered bases ahead of the current new-base position
+    buf_avail: u32,   // number of valid bits remaining in buf
 
     // Result state
     result: LookupResult,
@@ -156,9 +154,9 @@ where
             curr_mini_info_rc: dummy_mini,
             prev_mini_info_rc: dummy_mini,
             remaining_string_bases: 0,
+            buf_bit_pos: 0,
             buf: 0,
             buf_avail: 0,
-            buf_bit_pos: 0,
             result: LookupResult::not_found(),
             num_searches: 0,
             num_extensions: 0,
@@ -436,61 +434,76 @@ where
         self.buf_avail = 0;
     }
 
-    /// Try to extend within the current string using buffered SPSS reader.
+    /// Try to extend within the current string using single-base comparison
+    /// with buffered SPSS reads.
+    ///
+    /// Combines two optimizations:
+    /// 1. Buffer amortization: 64-bit reads cover 32 bases, shift-extracted on
+    ///    successive forward extensions (avoids memory access every other call).
+    /// 2. Single-base comparison: only check the one new base instead of loading
+    ///    and comparing a full k-mer. Correct because consecutive k-mers in a
+    ///    string share K-1 bases.
     #[inline(always)]
     fn try_extend(&mut self, dict: &crate::dictionary::Dictionary) {
-        let kmer_bits = (K * 2) as u32;
-
-        let expected_bits = if self.result.kmer_orientation > 0 {
+        if self.result.kmer_orientation > 0 {
             self.buf_bit_pos += 1;
-            if self.buf_avail >= kmer_bits + 2 {
-                self.buf >>= 2;
+            let new_base_pos = self.buf_bit_pos as usize + K - 1;
+            let spss_base = if self.buf_avail >= 2 {
                 self.buf_avail -= 2;
-                self.buf & ((1u64 << kmer_bits) - 1)
+                let b = self.buf & 3;
+                self.buf >>= 2;
+                b
             } else {
-                self.load_kmer_at(dict, self.buf_bit_pos as usize)
+                self.load_forward_base(dict, new_base_pos)
+            };
+            let kmer_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer.bits());
+            if spss_base == (kmer_u64 >> (2 * (K - 1))) & 3 {
+                self.num_extensions += 1;
+                self.result.kmer_id += 1;
+                self.result.kmer_id_in_string += 1;
+                self.remaining_string_bases -= 1;
+                return;
             }
         } else {
             self.buf_bit_pos -= 1;
-            self.load_kmer_at(dict, self.buf_bit_pos as usize)
-        };
-
-        let kmer_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer.bits());
-        let kmer_rc_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer_rc.bits());
-        if expected_bits == kmer_u64 || expected_bits == kmer_rc_u64 {
-            self.num_extensions += 1;
-            let ori = self.result.kmer_orientation;
-            self.result.kmer_id = (self.result.kmer_id as i64 + ori) as u64;
-            self.result.kmer_id_in_string =
-                (self.result.kmer_id_in_string as i64 + ori) as u64;
-            self.remaining_string_bases -= 1;
-            return;
+            let spss_base = Self::get_base(dict, self.buf_bit_pos as usize);
+            let kmer_rc_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer_rc.bits());
+            if spss_base == (kmer_rc_u64 & 3) {
+                self.num_extensions += 1;
+                self.result.kmer_id -= 1;
+                self.result.kmer_id_in_string -= 1;
+                self.remaining_string_bases -= 1;
+                return;
+            }
         }
-
         self.seed_with_dict(dict);
     }
 
-    /// Load a kmer from the SPSS strings at the given absolute base position.
-    /// Also refills the internal buffer for subsequent shifts.
+    /// Load a single base from SPSS at `abs_pos` and refill the forward buffer
+    /// with subsequent bases for shift-extraction on the next calls.
     #[inline(always)]
-    fn load_kmer_at(&mut self, dict: &crate::dictionary::Dictionary, abs_pos: usize) -> u64 {
+    fn load_forward_base(&mut self, dict: &crate::dictionary::Dictionary, abs_pos: usize) -> u64 {
+        let strings = dict.spss().strings_data();
         let byte_offset = abs_pos / 4;
         let bit_shift = (abs_pos % 4) * 2;
-        let strings = dict.spss().strings_data();
         let raw = unsafe {
             std::ptr::read_unaligned(strings.as_ptr().add(byte_offset) as *const u64)
         };
-        let mut result = raw >> bit_shift;
-        if bit_shift != 0 {
-            let extra = unsafe { *strings.as_ptr().add(byte_offset + 8) };
-            result |= (extra as u64) << (64 - bit_shift);
-        }
-        // Buffer always has 64 valid bits after refill (matching C++ get_word64 behavior)
-        self.buf = result;
-        self.buf_avail = 64;
-        let kmer_bits = (K * 2) as u32;
-        let mask = (1u64 << kmer_bits) - 1;
-        result & mask
+        let word = raw >> bit_shift;
+        let base = word & 3;
+        self.buf = word >> 2;
+        self.buf_avail = if bit_shift == 0 { 62 } else { 64 - bit_shift as u32 - 2 };
+        base
+    }
+
+    /// Extract a single 2-bit base from the SPSS at the given absolute position.
+    #[inline(always)]
+    fn get_base(dict: &crate::dictionary::Dictionary, abs_pos: usize) -> u64 {
+        let strings = dict.spss().strings_data();
+        let byte_offset = abs_pos / 4;
+        let bit_shift = (abs_pos % 4) * 2;
+        let byte = unsafe { *strings.as_ptr().add(byte_offset) };
+        ((byte >> bit_shift) & 3) as u64
     }
 
     /// Get the number of full searches performed
