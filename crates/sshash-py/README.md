@@ -75,6 +75,21 @@ kmer_id = dict.lookup("ACGTACGTACGTACGTACGTACGTACGTACG")  # None if absent
 present = dict.contains("ACGTACGTACGTACGTACGTACGTACGTACG")
 ```
 
+By default, a query on a non-canonical (strand-specific) index falls back to the
+reverse complement, so the reverse complement of an indexed k-mer is still found
+(reported with `orientation == -1`). Pass `forward_only=True` for a strand-specific
+query that does **not** perform this fallback:
+
+```python
+# Non-canonical index: only match the k-mer in its given orientation
+hit = dict.query("ACGTACGTACGTACGTACGTACGTACGTACG", forward_only=True)
+kmer_id = dict.lookup("ACGTACGTACGTACGTACGTACGTACGTACG", forward_only=True)
+present = dict.contains("ACGTACGTACGTACGTACGTACGTACGTACG", forward_only=True)
+```
+
+`forward_only` is ignored for canonical indexes, where both strands are inherently
+equivalent.
+
 ### Streaming queries over a sequence
 
 The streaming engine maintains minimizer state across consecutive k-mers, avoiding redundant MPHF lookups for adjacent positions. This is significantly faster than calling `query` in a loop when processing full reads or contigs.

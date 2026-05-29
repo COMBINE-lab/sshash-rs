@@ -132,9 +132,9 @@ where
 // dispatch_on_k!. All subsequent queries are plain vtable calls.
 
 trait DynDict: Send + Sync {
-    fn lookup_str(&self, kmer: &str) -> PyResult<Option<u64>>;
-    fn query_str(&self, kmer: &str) -> PyResult<Option<Hit>>;
-    fn contains_str(&self, kmer: &str) -> PyResult<bool>;
+    fn lookup_str(&self, kmer: &str, forward_only: bool) -> PyResult<Option<u64>>;
+    fn query_str(&self, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>>;
+    fn contains_str(&self, kmer: &str, forward_only: bool) -> PyResult<bool>;
     fn make_engine(&self) -> Box<dyn DynEngine + Send>;
     fn k(&self) -> usize;
     fn m(&self) -> usize;
@@ -155,21 +155,21 @@ impl<const K: usize> DynDict for ConcreteDynDict<K>
 where
     Kmer<K>: KmerBits,
 {
-    fn lookup_str(&self, kmer: &str) -> PyResult<Option<u64>> {
+    fn lookup_str(&self, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
         let k = Kmer::<K>::from_string(kmer)
             .map_err(|e| PyValueError::new_err(format!("Invalid k-mer '{}': {}", kmer, e)))?;
-        let id = self.inner.lookup::<K>(&k);
+        let id = self.inner.lookup_checked::<K>(&k, !forward_only);
         Ok(if id == u64::MAX { None } else { Some(id) })
     }
 
-    fn query_str(&self, kmer: &str) -> PyResult<Option<Hit>> {
+    fn query_str(&self, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
         let k = Kmer::<K>::from_string(kmer)
             .map_err(|e| PyValueError::new_err(format!("Invalid k-mer '{}': {}", kmer, e)))?;
-        Ok(result_to_hit(self.inner.query::<K>(&k)))
+        Ok(result_to_hit(self.inner.query_checked::<K>(&k, !forward_only)))
     }
 
-    fn contains_str(&self, kmer: &str) -> PyResult<bool> {
-        Ok(self.lookup_str(kmer)?.is_some())
+    fn contains_str(&self, kmer: &str, forward_only: bool) -> PyResult<bool> {
+        Ok(self.lookup_str(kmer, forward_only)?.is_some())
     }
 
     fn make_engine(&self) -> Box<dyn DynEngine + Send> {
@@ -251,25 +251,37 @@ impl PyDictionary {
     /// Return the global k-mer ID, or ``None`` if the k-mer is not in the index.
     ///
     /// :param kmer: DNA string of length ``k``.
+    /// :param forward_only: If ``True``, perform a strand-specific lookup that does
+    ///     not fall back to the reverse complement (only meaningful for
+    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
-    fn lookup(&self, kmer: &str) -> PyResult<Option<u64>> {
-        self.inner.lookup_str(kmer)
+    #[pyo3(signature = (kmer, forward_only=false))]
+    fn lookup(&self, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
+        self.inner.lookup_str(kmer, forward_only)
     }
 
     /// Return a :class:`Hit` with full location information, or ``None`` if not found.
     ///
     /// :param kmer: DNA string of length ``k``.
+    /// :param forward_only: If ``True``, perform a strand-specific query that does
+    ///     not fall back to the reverse complement (only meaningful for
+    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
-    fn query(&self, kmer: &str) -> PyResult<Option<Hit>> {
-        self.inner.query_str(kmer)
+    #[pyo3(signature = (kmer, forward_only=false))]
+    fn query(&self, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
+        self.inner.query_str(kmer, forward_only)
     }
 
     /// Return ``True`` if the k-mer is present in the index.
     ///
     /// :param kmer: DNA string of length ``k``.
+    /// :param forward_only: If ``True``, perform a strand-specific membership test
+    ///     that does not fall back to the reverse complement (only meaningful for
+    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
-    fn contains(&self, kmer: &str) -> PyResult<bool> {
-        self.inner.contains_str(kmer)
+    #[pyo3(signature = (kmer, forward_only=false))]
+    fn contains(&self, kmer: &str, forward_only: bool) -> PyResult<bool> {
+        self.inner.contains_str(kmer, forward_only)
     }
 
     /// Create a :class:`StreamingQuery` engine for efficient sliding-window queries.

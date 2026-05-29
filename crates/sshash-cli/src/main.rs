@@ -65,6 +65,11 @@ enum Commands {
         /// Use streaming query (FASTA/FASTQ only)
         #[arg(long, default_value = "false")]
         streaming: bool,
+
+        /// Strand-specific query: do not fall back to the reverse complement
+        /// (only meaningful for non-canonical indexes)
+        #[arg(long, default_value = "false")]
+        forward_only: bool,
     },
 
     /// Check correctness of a dictionary
@@ -142,8 +147,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Build { input, k, m, output, canonical, threads, ram_limit, verbose } => {
             build_command(input, k, m, output, canonical, threads, ram_limit, verbose)?;
         }
-        Commands::Query { index, query, streaming } => {
-            query_command(index, query, streaming)?;
+        Commands::Query { index, query, streaming, forward_only } => {
+            query_command(index, query, streaming, forward_only)?;
         }
         Commands::Check { index, input, streaming } => {
             check_command(index, input, streaming)?;
@@ -545,20 +550,29 @@ where
 }
 
 /// Query k-mers from a dictionary
-fn query_command(index: String, query: String, streaming: bool) -> anyhow::Result<()> {
+fn query_command(index: String, query: String, streaming: bool, forward_only: bool) -> anyhow::Result<()> {
     let index = normalize_index_path(&index);
     info!("Loading dictionary from {}...", index);
-    
+
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
     info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
 
+    if forward_only && streaming {
+        return Err(anyhow::anyhow!(
+            "--forward-only is not supported with --streaming (the streaming query always checks the reverse complement, matching C++)"
+        ));
+    }
+    if forward_only && dict.canonical() {
+        warn!("--forward-only has no effect on a canonical index (both strands are equivalent)");
+    }
+
     sshash_lib::dispatch_on_k!(k, K => {
-        query_with_k::<K>(&dict, &query, streaming)
+        query_with_k::<K>(&dict, &query, streaming, forward_only)
     })
 }
 
-fn query_with_k<const K: usize>(dict: &Dictionary, query: &str, streaming: bool) -> anyhow::Result<()>
+fn query_with_k<const K: usize>(dict: &Dictionary, query: &str, streaming: bool, forward_only: bool) -> anyhow::Result<()>
 where
     Kmer<K>: KmerBits,
 {
@@ -591,7 +605,7 @@ where
         
         // Parse k-mer
         if let Ok(kmer) = Kmer::<K>::from_string(kmer_str) {
-            let pos = dict.lookup(&kmer);
+            let pos = dict.lookup_checked(&kmer, !forward_only);
             if pos != sshash_lib::constants::INVALID_UINT64 {
                 found += 1;
                 if i < 10 {

@@ -94,6 +94,10 @@ impl Dictionary {
     }
 
     /// Look up a k-mer's position in the dictionary.
+    ///
+    /// In a non-canonical index this falls back to the reverse complement (C++
+    /// `check_reverse_complement = true`). See [`Self::lookup_forward`] for the
+    /// strand-specific variant.
     #[inline]
     pub fn lookup<const K: usize>(&self, kmer: &Kmer<K>) -> u64
     where
@@ -103,9 +107,91 @@ impl Dictionary {
         pos
     }
 
+    /// Strand-specific position lookup: no reverse-complement fallback in a
+    /// non-canonical index. Equivalent to C++ `lookup(kmer, false).kmer_offset`.
+    #[inline]
+    pub fn lookup_forward<const K: usize>(&self, kmer: &Kmer<K>) -> u64
+    where
+        Kmer<K>: KmerBits,
+    {
+        let (pos, _) = self.lookup_with_orientation_impl::<K, false>(kmer);
+        pos
+    }
+
+    /// Position lookup choosing the RC fallback at runtime (mirror of C++
+    /// `lookup(kmer, check_reverse_complement)`).
+    #[inline]
+    pub fn lookup_checked<const K: usize>(&self, kmer: &Kmer<K>, check_reverse_complement: bool) -> u64
+    where
+        Kmer<K>: KmerBits,
+    {
+        let (pos, _) = if check_reverse_complement {
+            self.lookup_with_orientation_impl::<K, true>(kmer)
+        } else {
+            self.lookup_with_orientation_impl::<K, false>(kmer)
+        };
+        pos
+    }
+
     /// Query a k-mer and return a full [`LookupResult`](crate::streaming_query::LookupResult).
+    ///
+    /// In a non-canonical (strand-specific) index, this tries the forward k-mer and
+    /// then falls back to its reverse complement (mirroring the C++ default of
+    /// `lookup(kmer, check_reverse_complement = true)`). Use [`Self::query_forward`]
+    /// for a strand-specific lookup that does not perform the RC fallback.
     #[inline]
     pub fn query<const K: usize>(&self, kmer: &Kmer<K>) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        self.query_impl::<K, true>(kmer)
+    }
+
+    /// Strand-specific query: only match the k-mer in its given orientation.
+    ///
+    /// In a non-canonical index this skips the reverse-complement fallback, so a
+    /// query for the RC of an indexed k-mer returns "not found". Equivalent to the
+    /// C++ `lookup(kmer, check_reverse_complement = false)`.
+    ///
+    /// Note: for a canonical index both strands are inherently equivalent, so this
+    /// behaves identically to [`Self::query`] (the flag is ignored, matching C++).
+    #[inline]
+    pub fn query_forward<const K: usize>(&self, kmer: &Kmer<K>) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        self.query_impl::<K, false>(kmer)
+    }
+
+    /// Query a k-mer, choosing the RC fallback at runtime.
+    ///
+    /// Mirror of the C++ `lookup(kmer, check_reverse_complement)` API. Prefer the
+    /// const-generic [`Self::query`] / [`Self::query_forward`] when the choice is
+    /// known at compile time — those incur no branch on the hot path.
+    #[inline]
+    pub fn query_checked<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        check_reverse_complement: bool,
+    ) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        if check_reverse_complement {
+            self.query_impl::<K, true>(kmer)
+        } else {
+            self.query_impl::<K, false>(kmer)
+        }
+    }
+
+    /// Const-generic query core. `CHECK_RC` is monomorphized away, so the default
+    /// (`CHECK_RC = true`) path compiles to identical code as a hand-written
+    /// forward-then-RC lookup — zero cost relative to the previous implementation.
+    #[inline(always)]
+    fn query_impl<const K: usize, const CHECK_RC: bool>(
+        &self,
+        kmer: &Kmer<K>,
+    ) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
@@ -113,13 +199,15 @@ impl Dictionary {
             return self.query_canonical(kmer);
         }
 
-        // Non-canonical mode: try forward k-mer first, then RC
+        // Non-canonical mode: try forward k-mer first, then (optionally) RC
         if let Some(res) = self.query_regular(kmer, 1) {
             return res;
         }
-        let kmer_rc = kmer.reverse_complement();
-        if let Some(res) = self.query_regular(&kmer_rc, -1) {
-            return res;
+        if CHECK_RC {
+            let kmer_rc = kmer.reverse_complement();
+            if let Some(res) = self.query_regular(&kmer_rc, -1) {
+                return res;
+            }
         }
         crate::streaming_query::LookupResult::not_found()
     }
@@ -204,9 +292,37 @@ impl Dictionary {
         Some((minimizer_info.value, bucket_id as u64, (end - begin) as u64))
     }
 
-    /// Look up a k-mer and return position + orientation
+    /// Look up a k-mer and return position + orientation.
+    ///
+    /// Non-canonical indexes fall back to the reverse complement (returning
+    /// orientation `-1`). For a strand-specific lookup use
+    /// [`Self::lookup_forward_with_orientation`].
     #[inline]
     pub fn lookup_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
+    where
+        Kmer<K>: KmerBits,
+    {
+        self.lookup_with_orientation_impl::<K, true>(kmer)
+    }
+
+    /// Strand-specific lookup with orientation: no RC fallback in a non-canonical
+    /// index. A query for the RC of an indexed k-mer returns `(INVALID_UINT64, 1)`.
+    #[inline]
+    pub fn lookup_forward_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
+    where
+        Kmer<K>: KmerBits,
+    {
+        self.lookup_with_orientation_impl::<K, false>(kmer)
+    }
+
+    /// Const-generic core for position+orientation lookup. `CHECK_RC` is
+    /// monomorphized away; the default (`true`) path is identical to the previous
+    /// forward-then-RC implementation.
+    #[inline(always)]
+    fn lookup_with_orientation_impl<const K: usize, const CHECK_RC: bool>(
+        &self,
+        kmer: &Kmer<K>,
+    ) -> (u64, i8)
     where
         Kmer<K>: KmerBits,
     {
@@ -217,10 +333,12 @@ impl Dictionary {
             if pos != INVALID_UINT64 {
                 return (pos, ori);
             }
-            let kmer_rc = kmer.reverse_complement();
-            let (pos_rc, _) = self.lookup_regular_with_orientation(&kmer_rc);
-            if pos_rc != INVALID_UINT64 {
-                return (pos_rc, -1);
+            if CHECK_RC {
+                let kmer_rc = kmer.reverse_complement();
+                let (pos_rc, _) = self.lookup_regular_with_orientation(&kmer_rc);
+                if pos_rc != INVALID_UINT64 {
+                    return (pos_rc, -1);
+                }
             }
             (INVALID_UINT64, 1)
         }
@@ -906,5 +1024,69 @@ mod tests {
         let result = dict.lookup(&kmer);
 
         eprintln!("\nLookup result: {} (INVALID={})", result, crate::constants::INVALID_UINT64);
+    }
+
+    #[test]
+    fn test_strand_specific_query_non_canonical() {
+        // Build a non-canonical (strand-specific) index from a single 7-mer so the
+        // only forward k-mer is `ACGTTGC` and its RC `GCAACGT` is *not* present
+        // in the forward orientation.
+        let config = BuildConfiguration::new(7, 5).unwrap();
+        assert!(!config.canonical, "default build is non-canonical");
+        let builder = DictionaryBuilder::new(config).unwrap();
+        let dict = builder
+            .build_from_sequences(vec!["ACGTTGC".to_string()])
+            .unwrap();
+        assert!(!dict.canonical());
+
+        let fwd = Kmer::<7>::from_str("ACGTTGC").unwrap();
+        let rc = fwd.reverse_complement();
+        assert_ne!(fwd.bits(), rc.bits(), "k-mer must not be its own RC");
+
+        // Forward k-mer: found regardless of RC handling.
+        assert!(dict.query::<7>(&fwd).is_found());
+        assert!(dict.query_forward::<7>(&fwd).is_found());
+
+        // RC of an indexed k-mer: the default falls back to RC and finds it, but
+        // the strand-specific query does not (this is the issue #1 request).
+        assert!(dict.query::<7>(&rc).is_found());
+        assert!(!dict.query_forward::<7>(&rc).is_found());
+
+        // Runtime-dispatch variant agrees with the const-generic ones.
+        assert!(dict.query_checked::<7>(&rc, true).is_found());
+        assert!(!dict.query_checked::<7>(&rc, false).is_found());
+
+        // Orientation is reported: forward => +1, RC fallback => -1.
+        assert_eq!(dict.lookup_with_orientation::<7>(&fwd).1, 1);
+        assert_eq!(dict.lookup_with_orientation::<7>(&rc).1, -1);
+
+        // Strand-specific position lookups.
+        assert_ne!(dict.lookup_forward::<7>(&fwd), INVALID_UINT64);
+        assert_eq!(dict.lookup_forward::<7>(&rc), INVALID_UINT64);
+        assert_eq!(dict.lookup_forward_with_orientation::<7>(&rc).0, INVALID_UINT64);
+        assert_eq!(dict.lookup_checked::<7>(&rc, false), INVALID_UINT64);
+        assert_ne!(dict.lookup_checked::<7>(&rc, true), INVALID_UINT64);
+    }
+
+    #[test]
+    fn test_strand_specific_query_canonical_ignores_flag() {
+        // For a canonical index both strands are equivalent, so the strand-specific
+        // query must behave identically to the default (flag ignored, matching C++).
+        let mut config = BuildConfiguration::new(7, 5).unwrap();
+        config.canonical = true;
+        let builder = DictionaryBuilder::new(config).unwrap();
+        let dict = builder
+            .build_from_sequences(vec!["ACGTTGC".to_string()])
+            .unwrap();
+        assert!(dict.canonical());
+
+        let fwd = Kmer::<7>::from_str("ACGTTGC").unwrap();
+        let rc = fwd.reverse_complement();
+
+        // Both orientations found, with or without the RC fallback flag.
+        assert!(dict.query::<7>(&fwd).is_found());
+        assert!(dict.query_forward::<7>(&fwd).is_found());
+        assert!(dict.query::<7>(&rc).is_found());
+        assert!(dict.query_forward::<7>(&rc).is_found());
     }
 }
