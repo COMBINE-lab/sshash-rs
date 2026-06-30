@@ -335,8 +335,25 @@ impl EliasFanoOffsets {
             return None;
         };
 
+        // Linear scan from `start`, caching the two boundary offsets as we go.
+        // Each `access` is a full Elias-Fano select; the original recomputed
+        // `access(string_id)` and `access(string_id + 1)` in the return even
+        // though the scan had just evaluated them. We keep the last `<= pos`
+        // value (`prev_access`, which becomes `access(string_id)`) and the
+        // first `> pos` value that breaks the loop (`break_access`, which is
+        // `access(string_id + 1)`), so a successful locate does ~half as many
+        // selects. Results are identical (verified by the brute-force stress
+        // tests below).
         let mut idx = start;
-        while idx < n && self.access(idx) <= pos {
+        let mut prev_access = 0u64;
+        let mut break_access = 0u64;
+        while idx < n {
+            let a = self.access(idx);
+            if a > pos {
+                break_access = a;
+                break;
+            }
+            prev_access = a;
             idx += 1;
         }
 
@@ -345,7 +362,13 @@ impl EliasFanoOffsets {
         }
         let string_id = idx - 1;
         if string_id + 1 < n {
-            Some((string_id as u64, self.access(string_id), self.access(string_id + 1)))
+            // Reaching here means `idx == string_id + 1 < n`, so the scan broke
+            // via `a > pos` and `break_access == access(string_id + 1)`.
+            // `access(string_id)` is `prev_access` when the loop advanced at
+            // least once (`idx > start`); on an immediate break the index
+            // `string_id == start - 1` was never visited, so read it directly.
+            let begin = if idx > start { prev_access } else { self.access(string_id) };
+            Some((string_id as u64, begin, break_access))
         } else {
             None
         }
