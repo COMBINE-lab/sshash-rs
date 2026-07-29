@@ -28,7 +28,7 @@ ph = { package = "ph-temp", version = "0.12.0", default-features = false, featur
 ] }
 
 # FASTA/FASTQ parsing
-needletail = "0.6"
+needletail = "0.7"
 
 # Error handling
 anyhow = "1.0"
