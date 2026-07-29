@@ -49,5 +49,4 @@ memmap2 = { workspace = true }
 [dev-dependencies]
 # Testing utilities
 rand = "0.10"
-proptest = "1.11"
 tempfile = "3.27"
