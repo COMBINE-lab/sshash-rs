@@ -19,7 +19,7 @@ ph = { workspace = true }
 needletail = { workspace = true }
 
 # Serialization
-epserde = "0.12.5" # Must match sux's epserde version
+epserde = "0.12.6" # Must match sux's epserde version
 
 # Error handling
 anyhow = { workspace = true }
@@ -41,13 +41,12 @@ rapidhash = "4"
 value-traits = "0.2"
 
 # Memory usage measurement (must match sux's version)
-mem_dbg = "0.4.1"
+mem_dbg = "0.4.4"
 
 # Memory mapping (for external sorting)
 memmap2 = { workspace = true }
 
 [dev-dependencies]
 # Testing utilities
-rand = "0.9"
-proptest = "1.6"
-tempfile = "3.20"
+rand = "0.10"
+tempfile = "3.27"

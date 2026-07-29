@@ -10,16 +10,18 @@ description = "Fast hashbrown-based k-mer dictionary for small references (drop-
 
 [dependencies]
 sshash-lib = { workspace = true }
-hashbrown = "0.15"
+hashbrown = "0.17"
 # Pinned: rapidhash's fast hashers are not guaranteed stable across crate
-# versions (see rapidhash docs). A version bump would silently invalidate
-# on-disk .tdct files. `.tdct` headers record this version and refuse to
-# load if it does not match.
-rapidhash = "=4.4.0"
+# versions (see rapidhash docs), so the version is chosen deliberately rather
+# than floated. `.tdct` headers record the version that wrote them and the load
+# path accepts only versions verified to hash identically -- see
+# io::ACCEPTED_RAPIDHASH_VERSIONS, which must be extended (with evidence)
+# whenever this pin moves.
+rapidhash = "=4.5.1"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-rand = "0.9"
+rand = "0.10"
 tempfile = { workspace = true }
