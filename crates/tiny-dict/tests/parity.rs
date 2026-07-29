@@ -172,3 +172,62 @@ fn tiny_dict_streaming_query_matches_one_shot() {
         }
     }
 }
+
+/// The rapidhash version recorded in a `.tdct` header is checked against an
+/// allow-list of versions verified to hash identically, not against the exact
+/// version this binary links. Rewriting the header's three version bytes is
+/// enough to exercise both sides of that check: the payload is untouched, so a
+/// file naming an accepted version must still load and answer identically,
+/// while one naming an unaccepted version must be refused up front.
+#[test]
+fn tdct_rapidhash_version_allow_list() {
+    let mut rng = StdRng::seed_from_u64(0x4A91D0);
+    let sequences: Vec<String> = (0..4).map(|_| random_dna(&mut rng, 300)).collect();
+    let sshash = build_sshash(sequences.clone());
+    let tiny = TinyDictionary::from_sshash::<K>(&sshash);
+
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_path_buf();
+    tiny.save(&path).expect("save");
+    let original = std::fs::read(&path).expect("read back");
+
+    // Bytes 10..13 are the rapidhash semver; everything else stays byte-identical.
+    let rewrite_version = |ver: [u8; 3]| {
+        let mut bytes = original.clone();
+        bytes[10..13].copy_from_slice(&ver);
+        let f = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(f.path(), &bytes).expect("write");
+        f
+    };
+
+    // 4.4.0 is on the allow-list: a file stamped with it still loads, and every
+    // k-mer answers exactly as it does through the freshly built dictionary.
+    let accepted = rewrite_version([4, 4, 0]);
+    let loaded = TinyDictionary::load(accepted.path()).expect("accepted version must load");
+    for seq in &sequences {
+        let bytes = seq.as_bytes();
+        if bytes.len() < K {
+            continue;
+        }
+        for start in 0..=(bytes.len() - K) {
+            let kmer_bytes = &bytes[start..start + K];
+            let kmer_str = std::str::from_utf8(kmer_bytes).unwrap();
+            let a = tiny.lookup::<K>(kmer_bytes);
+            let b = loaded.lookup::<K>(kmer_bytes);
+            assert_result_equal(&a, &b, kmer_str);
+        }
+    }
+
+    // Anything not on the list is rejected before any bulk work, so widening the
+    // check cannot degrade into silently trusting an unknown hash.
+    for ver in [[4, 3, 0], [5, 0, 0]] {
+        let rejected = rewrite_version(ver);
+        match TinyDictionary::load(rejected.path()) {
+            Err(tiny_dict::io::TdctError::RapidhashVersionMismatch { got, .. }) => {
+                assert_eq!(got, ver, "error should report the version it found");
+            }
+            Err(other) => panic!("rapidhash {ver:?} must fail the version check, got {other:?}"),
+            Ok(_) => panic!("rapidhash {ver:?} must be refused, but the file loaded"),
+        }
+    }
+}

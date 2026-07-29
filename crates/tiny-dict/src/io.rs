@@ -3,12 +3,12 @@
 //! The format trades tight packing for a fast load: the on-disk layout
 //! carries precomputed rapidhash values alongside each (key, value) pair
 //! so the load path can use `RawVacantEntryMut::insert_hashed_nocheck` and
-//! skip re-hashing every key. The hash values are pinned to a specific
-//! rapidhash version (see [`RAPIDHASH_VERSION`]); a version mismatch or a
-//! platform-specific drift (rapidhash's own docs disclaim stability across
-//! compilers / target CPUs) is caught by the on-load probe check before
-//! any bulk work happens, so corrupt lookups are impossible — only loud
-//! errors asking the user to rebuild.
+//! skip re-hashing every key. Each file records the rapidhash version that
+//! wrote it (see [`RAPIDHASH_VERSION`]); on load, a version outside the
+//! verified-compatible set, or a platform-specific drift (rapidhash's own docs
+//! disclaim stability across compilers / target CPUs), is caught by the on-load
+//! probe check before any bulk work happens, so corrupt lookups are impossible
+//! — only loud errors asking the user to rebuild.
 //!
 //! # Layout (little-endian, tightly packed unless noted)
 //!
@@ -52,9 +52,24 @@ pub const MAGIC: &[u8; 8] = b"TDCT0001";
 pub const FORMAT_VERSION: u16 = 1;
 
 /// Pinned rapidhash semver. Must match the `rapidhash` dep version in
-/// `Cargo.toml` (which is pinned with `=`). The load path rejects any
-/// `.tdct` whose header does not match these three bytes.
-pub const RAPIDHASH_VERSION: [u8; 3] = [4, 4, 0];
+/// `Cargo.toml` (which is pinned with `=`). This is the version stamped into
+/// the header of every `.tdct` this binary writes.
+pub const RAPIDHASH_VERSION: [u8; 3] = [4, 5, 1];
+
+/// rapidhash versions whose `fast::SeedableState::fixed()` output is known to
+/// be identical, and whose `.tdct` files are therefore interchangeable.
+///
+/// The load path accepts a header naming any of these rather than requiring an
+/// exact match with [`RAPIDHASH_VERSION`]. That is safe because this list is
+/// only a fast pre-filter: the probe check below re-hashes stored keys and is
+/// what actually proves the linked rapidhash agrees with the one that wrote the
+/// file. A version added here in error cannot corrupt a lookup — it just moves
+/// the loud failure from `RapidhashVersionMismatch` to `ProbeMismatch`.
+///
+/// Only add a version after verifying it hashes identically; rapidhash's own
+/// docs disclaim output stability across releases, so this must stay a
+/// verified allow-list rather than a range.
+const ACCEPTED_RAPIDHASH_VERSIONS: &[[u8; 3]] = &[[4, 4, 0], [4, 5, 1]];
 
 /// Number of (key, hash) probes stored in the header for load-time
 /// cross-platform drift detection. 16 is overkill (one would suffice) but
@@ -70,9 +85,10 @@ pub enum TdctError {
     #[error("unsupported .tdct format version {got}; this build expects {expected}")]
     UnsupportedFormat { got: u16, expected: u16 },
     #[error(
-        "this .tdct was built with rapidhash {got:?}; this binary links rapidhash {expected:?}. \
-         Rapidhash does not guarantee stable hash output across versions — rebuild the index with \
-         `piscem build --dict tiny` on this machine."
+        "this .tdct was built with rapidhash {got:?}, which is not known to hash identically to \
+         the rapidhash {expected:?} this binary links. Rapidhash does not guarantee stable hash \
+         output across versions — rebuild the index with `piscem build --dict tiny` on this \
+         machine."
     )]
     RapidhashVersionMismatch { got: [u8; 3], expected: [u8; 3] },
     #[error(
@@ -166,7 +182,7 @@ impl TinyDictionary {
         }
         let mut rh_ver = [0u8; 3];
         r.read_exact(&mut rh_ver)?;
-        if rh_ver != RAPIDHASH_VERSION {
+        if !ACCEPTED_RAPIDHASH_VERSIONS.contains(&rh_ver) {
             return Err(TdctError::RapidhashVersionMismatch {
                 got: rh_ver,
                 expected: RAPIDHASH_VERSION,

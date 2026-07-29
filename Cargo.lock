@@ -1402,9 +1402,9 @@ checksum = "9813f789f95ee4fe6b4d01834404d7cccacbc3f6c029343af910b3c2835eb9f1"
 
 [[package]]
 name = "rapidhash"
-version = "4.4.0"
+version = "4.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "111325c42c4bafae99e777cd77b40dea9a2b30c69e9d8c74b6eccd7fba4337de"
+checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
 dependencies = [
  "rustversion",
 ]
@@ -1621,7 +1621,7 @@ dependencies = [
  "needletail",
  "ph-temp",
  "rand",
- "rapidhash 4.4.0",
+ "rapidhash 4.5.1",
  "rayon",
  "seq-macro",
  "sux",
@@ -1881,7 +1881,7 @@ dependencies = [
  "anyhow",
  "hashbrown 0.17.1",
  "rand",
- "rapidhash 4.4.0",
+ "rapidhash 4.5.1",
  "sshash-lib",
  "tempfile",
  "thiserror 2.0.19",
