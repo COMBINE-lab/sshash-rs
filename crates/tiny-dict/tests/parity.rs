@@ -5,7 +5,7 @@
 //! the SPSS returns identical LookupResult fields from both dictionaries.
 //! Also samples random absent k-mers.
 
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{rngs::StdRng, RngExt, SeedableRng};
 use sshash_lib::builder::{BuildConfiguration, DictionaryBuilder};
 use sshash_lib::{Kmer, KmerDictionary, KmerStreamingQuery, LookupResult};
 use tiny_dict::TinyDictionary;
