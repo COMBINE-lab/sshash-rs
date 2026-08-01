@@ -433,6 +433,23 @@ impl Dictionary {
         Kmer<K>: KmerBits,
     {
         let (begin, end) = self.index.locate_bucket(bucket_id);
+        self.lookup_in_bucket_bounds::<K>(kmer, minimizer_info, begin, end)
+    }
+
+    /// As [`Self::lookup_in_bucket`], but entered with the bucket bounds already
+    /// resolved. Splitting here is what lets a streaming caller reuse the bounds
+    /// it found for the previous k-mer (see `BucketCache`).
+    #[inline]
+    fn lookup_in_bucket_bounds<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        minimizer_info: MinimizerInfo,
+        begin: usize,
+        end: usize,
+    ) -> Option<LocatedHit>
+    where
+        Kmer<K>: KmerBits,
+    {
         let n = end - begin;
         if n == 0 {
             return None;
@@ -466,6 +483,23 @@ impl Dictionary {
         Kmer<K>: KmerBits,
     {
         let (begin, end) = self.index.locate_bucket(bucket_id);
+        self.lookup_in_bucket_canonical_bounds::<K>(kmer, kmer_rc, minimizer_info, begin, end)
+    }
+
+    /// As [`Self::lookup_in_bucket_canonical`], but entered with the bucket
+    /// bounds already resolved.
+    #[inline]
+    fn lookup_in_bucket_canonical_bounds<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        kmer_rc: &Kmer<K>,
+        minimizer_info: MinimizerInfo,
+        begin: usize,
+        end: usize,
+    ) -> Option<LocatedHit>
+    where
+        Kmer<K>: KmerBits,
+    {
         let n = end - begin;
         if n == 0 {
             return None;
@@ -889,6 +923,28 @@ impl Dictionary {
 
     // --- Streaming query helpers ---
 
+    /// Resolve a minimizer to its bucket bounds, reusing `cache` when the
+    /// minimizer is unchanged from the previous k-mer.
+    ///
+    /// `None` means the minimizer is not in the index at all (the caller must
+    /// report `minimizer_found = false`); `Some((begin, end))` are the bounds.
+    #[inline(always)]
+    fn resolve_bucket(&self, mini_value: u64, cache: &mut BucketCache) -> Option<(usize, usize)> {
+        if cache.valid && cache.mini_value == mini_value {
+            return cache.bounds;
+        }
+        let bounds = self
+            .control_map
+            .lookup(mini_value)
+            .filter(|&id| id < self.index.num_buckets())
+            .map(|id| self.index.locate_bucket(id));
+        cache.valid = true;
+        cache.mini_value = mini_value;
+        cache.bounds = bounds;
+        bounds
+    }
+
+
     /// Regular (non-canonical) lookup with pre-computed minimizer, returning LookupResult.
     pub(crate) fn lookup_regular_streaming<const K: usize>(
         &self,
@@ -950,6 +1006,81 @@ impl Dictionary {
         }
     }
 
+    /// [`Self::lookup_regular_streaming`] with bucket-bounds memoization.
+    pub(crate) fn lookup_regular_streaming_cached<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        mini_info: MinimizerInfo,
+        cache: &mut BucketCache,
+    ) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        match self.resolve_bucket(mini_info.value, cache) {
+            None => {
+                let mut res = crate::streaming_query::LookupResult::not_found();
+                res.minimizer_found = false;
+                res
+            }
+            Some((begin, end)) => {
+                match self.lookup_in_bucket_bounds::<K>(kmer, mini_info, begin, end) {
+                    Some(hit) => hit.into_lookup_result(self.k),
+                    None => crate::streaming_query::LookupResult::not_found(),
+                }
+            }
+        }
+    }
+
+    /// [`Self::lookup_canonical_streaming`] with bucket-bounds memoization.
+    pub(crate) fn lookup_canonical_streaming_cached<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        kmer_rc: &Kmer<K>,
+        mini_info: MinimizerInfo,
+        cache: &mut BucketCache,
+    ) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        match self.resolve_bucket(mini_info.value, cache) {
+            None => {
+                let mut res = crate::streaming_query::LookupResult::not_found();
+                res.minimizer_found = false;
+                res
+            }
+            Some((begin, end)) => {
+                match self.lookup_in_bucket_canonical_bounds::<K>(kmer, kmer_rc, mini_info, begin, end) {
+                    Some(hit) => hit.into_lookup_result(self.k),
+                    None => crate::streaming_query::LookupResult::not_found(),
+                }
+            }
+        }
+    }
+}
+
+/// Memoized bucket-bounds resolution for a streaming query.
+///
+/// Locating a bucket costs an MPHF evaluation (`PartitionedMphf::get`) plus two
+/// Elias-Fano accesses (`DArray::select`), and depends *only* on the minimizer
+/// value. Consecutive k-mers share a minimizer for runs averaging `(k-m+2)/2`,
+/// so most seeds re-derive bounds they just computed: measured at 71.3% of
+/// 46.3M seeds on gencode v49 (k=31, m=19), all of them already downstream of
+/// the unitig-extension path, which handles a disjoint set of k-mers.
+///
+/// The mapping minimizer -> bounds is a pure function of an immutable
+/// dictionary, so an entry never goes stale and needs no invalidation, not even
+/// across reads. Only the *bounds* are cached; the per-k-mer `MinimizerInfo`
+/// (which carries the minimizer's position within the k-mer) still flows into
+/// the bucket scan untouched, so results are unchanged.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BucketCache {
+    /// Whether `mini_value`/`bounds` hold anything. Needed because any `u64`,
+    /// including `u64::MAX`, is a legal minimizer value.
+    valid: bool,
+    mini_value: u64,
+    /// `None` records a minimizer that is absent from the index -- worth
+    /// caching too, since that is the other repeated outcome.
+    bounds: Option<(usize, usize)>,
 }
 
 #[cfg(test)]

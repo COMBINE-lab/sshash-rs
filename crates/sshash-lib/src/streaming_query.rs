@@ -123,6 +123,8 @@ where
     num_extensions: u64,
     num_invalid: u64,
     num_negative: u64,
+    /// Memoized bucket bounds for the current minimizer (see `BucketCache`).
+    bucket_cache: crate::dictionary::BucketCache,
 }
 
 impl<const K: usize> StreamingQuery<K>
@@ -162,6 +164,7 @@ where
             num_extensions: 0,
             num_invalid: 0,
             num_negative: 0,
+            bucket_cache: Default::default(),
         }
     }
 
@@ -328,21 +331,21 @@ where
 
             if self._canonical {
                 if mini_fwd.value < mini_rc.value {
-                    self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_fwd);
+                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
                 } else if mini_rc.value < mini_fwd.value {
-                    self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_rc);
+                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
                 } else {
-                    self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_fwd);
+                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
                     if self.result.kmer_id == u64::MAX {
-                        self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_rc);
+                        self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
                     }
                 }
             } else {
-                self.result = dict.lookup_regular_streaming::<K>(&kmer, mini_fwd);
+                self.result = dict.lookup_regular_streaming_cached::<K>(&kmer, mini_fwd, &mut self.bucket_cache);
                 let minimizer_found = self.result.minimizer_found;
                 if self.result.kmer_id == u64::MAX {
                     assert_eq!(self.result.kmer_orientation, 1);
-                    self.result = dict.lookup_regular_streaming::<K>(&kmer_rc, mini_rc);
+                    self.result = dict.lookup_regular_streaming_cached::<K>(&kmer_rc, mini_rc, &mut self.bucket_cache);
                     self.result.kmer_orientation = -1;
                     let minimizer_rc_found = self.result.minimizer_found;
                     self.result.minimizer_found = minimizer_rc_found || minimizer_found;
@@ -394,21 +397,21 @@ where
 
         if self._canonical {
             if mini_fwd.value < mini_rc.value {
-                self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_fwd);
+                self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
             } else if mini_rc.value < mini_fwd.value {
-                self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_rc);
+                self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
             } else {
-                self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_fwd);
+                self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
                 if self.result.kmer_id == u64::MAX {
-                    self.result = dict.lookup_canonical_streaming::<K>(&kmer, &kmer_rc, mini_rc);
+                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
                 }
             }
         } else {
-            self.result = dict.lookup_regular_streaming::<K>(&kmer, mini_fwd);
+            self.result = dict.lookup_regular_streaming_cached::<K>(&kmer, mini_fwd, &mut self.bucket_cache);
             let minimizer_found = self.result.minimizer_found;
             if self.result.kmer_id == u64::MAX {
                 debug_assert_eq!(self.result.kmer_orientation, 1);
-                self.result = dict.lookup_regular_streaming::<K>(&kmer_rc, mini_rc);
+                self.result = dict.lookup_regular_streaming_cached::<K>(&kmer_rc, mini_rc, &mut self.bucket_cache);
                 self.result.kmer_orientation = -1;
                 let minimizer_rc_found = self.result.minimizer_found;
                 self.result.minimizer_found = minimizer_rc_found || minimizer_found;
