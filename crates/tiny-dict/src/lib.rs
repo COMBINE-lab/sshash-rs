@@ -186,16 +186,21 @@ pub struct TinySpss {
     offsets: Vec<u64>,
 }
 
+/// Zero bytes kept past the end of `strings` so a k-mer decode near the tail can
+/// read a full word plus its spill byte without a bounds test. `decode_kmer_at`
+/// reads at most `byte_offset + 8`, and `byte_offset` is always inside the
+/// logical data, so 8 is sufficient.
+pub(crate) const SPSS_TAIL_PAD: usize = 8;
+
 impl TinySpss {
     /// Create by copying out of an sshash SPSS.
     pub fn from_sshash(spss: &SpectrumPreservingStringSet) -> Self {
-        let strings = spss.strings_raw().to_vec();
         let n = spss.offsets_len();
         let mut offsets = Vec::with_capacity(n);
         for i in 0..n {
             offsets.push(spss.offset_at(i));
         }
-        Self { strings, offsets }
+        Self::from_raw_parts(spss.strings_raw().to_vec(), offsets)
     }
 
     #[inline]
@@ -226,46 +231,36 @@ impl TinySpss {
         let byte_offset = absolute_pos / 4;
         let bit_shift = (absolute_pos % 4) * 2;
         let needed_bits = K * 2;
-        let needed_bytes = (needed_bits + bit_shift).div_ceil(8);
 
-        if needed_bytes <= 8 {
-            let raw = if byte_offset + 8 <= self.strings.len() {
-                // SAFETY: bounds-checked above; strings are little-endian 2-bit
-                // encoding so native-endian u64 read on LE hosts is correct.
-                unsafe {
-                    std::ptr::read_unaligned(self.strings.as_ptr().add(byte_offset) as *const u64)
-                }
-            } else {
-                let mut buf = [0u8; 8];
-                let avail = self.strings.len() - byte_offset;
-                buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
-                u64::from_le_bytes(buf)
-            };
-            let shifted = raw >> bit_shift;
-            let mask = if needed_bits >= 64 {
-                u64::MAX
-            } else {
-                (1u64 << needed_bits) - 1
-            };
-            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(shifted & mask))
+        // K <= 31 here (TinyDictionary enforces it), so a k-mer spans at most
+        // 62 + 6 = 68 bits: one u64 at `byte_offset` plus the byte the top bits
+        // spill into. The previous form branched twice per decode -- on
+        // `needed_bytes <= 8`, which is really `bit_shift > 2` and so true for
+        // half of all positions, and again on a bounds test inside each arm --
+        // neither of which predicts, since both follow from the read position.
+        //
+        // `(extra << 1) << (63 - bit_shift)` equals the wanted
+        // `extra << (64 - bit_shift)` for bit_shift in {2, 4, 6} and is
+        // identically zero for bit_shift == 0, where the `<< 1` clears the only
+        // bit that would survive `<< 63`. That is what makes the branchless form
+        // expressible: the direct expression is shift-by-64 UB at bit_shift 0.
+        //
+        // The bounds tests are gone because `strings` keeps SPSS_TAIL_PAD bytes
+        // of tail padding, guaranteed by `from_raw_parts`.
+        let (raw, extra) = unsafe {
+            // SAFETY: `byte_offset` lies within the logical data for any
+            // decodable k-mer, and the buffer keeps 8 zero bytes past it, so
+            // `byte_offset + 8` is always in the allocation.
+            let base = self.strings.as_ptr().add(byte_offset);
+            (std::ptr::read_unaligned(base as *const u64), *base.add(8) as u64)
+        };
+        let result = (raw >> bit_shift) | ((extra << 1) << (63 - bit_shift));
+        let mask = if needed_bits >= 64 {
+            u64::MAX
         } else {
-            // K=31 (and K=30) at bit_shift ∈ {4, 6} need 9 bytes: 62+6 = 68
-            // bits exceeds a u64. Load u128 and mask; value still fits in u64
-            // because K ≤ 31 caps needed_bits at 62.
-            let raw: u128 = if byte_offset + 16 <= self.strings.len() {
-                unsafe {
-                    std::ptr::read_unaligned(self.strings.as_ptr().add(byte_offset) as *const u128)
-                }
-            } else {
-                let mut buf = [0u8; 16];
-                let avail = self.strings.len() - byte_offset;
-                buf[..avail].copy_from_slice(&self.strings[byte_offset..byte_offset + avail]);
-                u128::from_le_bytes(buf)
-            };
-            let shifted = raw >> bit_shift;
-            let mask = (1u128 << needed_bits) - 1;
-            Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64((shifted & mask) as u64))
-        }
+            (1u64 << needed_bits) - 1
+        };
+        Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(result & mask))
     }
 }
 

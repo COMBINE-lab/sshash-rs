@@ -279,7 +279,14 @@ fn collect_probe_keys(dict: &TinyDictionary, n: usize) -> Vec<u64> {
 impl TinySpss {
     /// Reconstruct a [`TinySpss`] from already-deserialized buffers.
     #[inline]
-    pub(crate) fn from_raw_parts(strings: Vec<u8>, offsets: Vec<u64>) -> Self {
+    pub(crate) fn from_raw_parts(mut strings: Vec<u8>, offsets: Vec<u64>) -> Self {
+        // Both callers -- the sshash copy and the .tdct loader -- funnel through
+        // here so the padding invariant `decode_kmer_at` relies on holds however
+        // the set was built. The sshash buffer already carries padding of its
+        // own, so this can add a second copy's worth; 8 bytes is not worth
+        // tracking a logical length to avoid, and the on-disk format is
+        // unchanged either way.
+        strings.resize(strings.len() + crate::SPSS_TAIL_PAD, 0);
         Self { strings, offsets }
     }
 }
