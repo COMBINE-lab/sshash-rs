@@ -295,12 +295,17 @@ impl TinyDictionary {
         canonical: bool,
         index: HashMap<u64, PackedValue, TinyBuildHasher>,
     ) -> Self {
+        // The prefilter is derived from the loaded key set rather than stored,
+        // so `.tdct` stays byte-compatible in both directions. One pass over
+        // ~1.5M keys costs single-digit milliseconds against a ~35 MB file.
+        let bloom = crate::BlockedBloom::build(index.keys().copied(), index.len());
         Self {
             spss,
             k,
             m,
             canonical,
             index,
+            bloom,
         }
     }
 }

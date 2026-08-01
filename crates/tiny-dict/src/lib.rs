@@ -30,6 +30,9 @@ use sshash_lib::{
 };
 
 pub mod io;
+mod prefilter;
+
+use prefilter::BlockedBloom;
 
 /// BuildHasher for the TinyDictionary hashmap.
 ///
@@ -187,6 +190,10 @@ pub struct TinyDictionary {
     canonical: bool,
     /// canonical k-mer bits (u64) → packed (string_id, kmer_id_in_string, spss_is_canonical)
     index: HashMap<u64, PackedValue, TinyBuildHasher>,
+    /// Negative prefilter over `index`'s key set. Answers the common
+    /// "definitely absent" case without touching `index` at all. Derived, not
+    /// serialized — see [`prefilter`].
+    bloom: BlockedBloom,
 }
 
 impl TinyDictionary {
@@ -245,12 +252,15 @@ impl TinyDictionary {
             }
         }
 
+        let bloom = BlockedBloom::build(index.keys().copied(), index.len());
+
         Self {
             spss,
             k: K,
             m: dict.m(),
             canonical: dict.canonical(),
             index,
+            bloom,
         }
     }
 
@@ -285,6 +295,13 @@ impl TinyDictionary {
     /// Bit-level core lookup: caller has already parsed and canonicalized.
     #[inline]
     fn lookup_core_bits(&self, canon_bits: u64, query_fw_is_canonical: bool) -> Option<(u32, u32, i64)> {
+        // Negative prefilter: no false negatives, so a `false` here is proof of
+        // absence and skips the hashbrown probe entirely. On probe-panel
+        // references ~79% of queried k-mers are absent, and this is where that
+        // is turned into ~12 instructions instead of a full group probe.
+        if !self.bloom.might_contain(canon_bits) {
+            return None;
+        }
         let packed = *self.index.get(&canon_bits)?;
         let string_id = unpack_string_id(packed);
         let kmer_id = unpack_kmer_id(packed);
