@@ -219,37 +219,30 @@ impl SpectrumPreservingStringSet {
         let needed_bits = K * 2;
 
         if K <= 31 {
-        // Whether the k-mer's top bits can reach past the 8-byte window at all.
-        // `bit_shift` is `(pos % 4) * 2`, so at most 6; a k-mer needs
-        // `2K + bit_shift` bits, so no position can spill unless `2K + 6 > 64`,
-        // i.e. K >= 30. `K` is a const generic, so this whole test folds away at
-        // compile time and each K gets only the arm it needs.
-        //
-        // This matters both ways. At K = 31 the spill is needed for half of all
-        // positions, on a value derived from the read position, so branching on
-        // it does not predict -- folding it in unconditionally is worth 3.2%.
-        // At K <= 29 the spill can never happen, so folding it in unconditionally
-        // would be pure overhead: an extra load, shift and or per decode. That
-        // cost is real -- measured as +1.4% CPU on a k=23 probe panel over 8
-        // paired runs -- which is why this is gated rather than always folded.
-            let base = unsafe { self.strings.as_ptr().add(byte_offset) };
-            // SAFETY: `byte_offset` lies within the logical data for any
-            // decodable k-mer, and `strings` keeps 8 bytes of tail padding, so
-            // both this word and the spill byte are inside the allocation.
-            let raw = unsafe { std::ptr::read_unaligned(base as *const u64) };
-            let mask = (1u64 << needed_bits) - 1;
-            let result = if K * 2 + 6 > 64 {
-                // `(extra << 1) << (63 - bit_shift)` equals the wanted
-                // `extra << (64 - bit_shift)` for bit_shift in {2, 4, 6} and is
-                // identically zero for bit_shift == 0, where the `<< 1` clears
-                // the only bit that would survive `<< 63`. That is what makes
-                // the branchless form expressible: the direct expression is
-                // shift-by-64 UB at bit_shift 0.
-                let extra = unsafe { *base.add(8) as u64 };
-                (raw >> bit_shift) | ((extra << 1) << (63 - bit_shift))
-            } else {
-                raw >> bit_shift
+            // K<=31: need at most 62+6=68 bits, so a u64 at `byte_offset` plus the
+            // one byte the top bits can spill into.
+            //
+            // The spill is folded in unconditionally. `bit_shift` is `(pos % 4) * 2`,
+            // so it is one of {0, 2, 4, 6} and the spill only actually matters for
+            // {4, 6} — i.e. a branch that is taken for half of all positions, on a
+            // value derived from the read position, so it does not predict. Making
+            // it branchless is worth more than the byte load it saves.
+            //
+            // `(extra << 1) << (63 - bit_shift)` equals the wanted
+            // `extra << (64 - bit_shift)` for bit_shift in {2, 4, 6}, and is
+            // identically zero for bit_shift == 0 (the `<< 1` clears the only bit
+            // that would survive `<< 63`). That dodges the shift-by-64 UB that
+            // makes the direct expression unusable without the branch.
+            let (raw, extra) = unsafe {
+                let base = self.strings.as_ptr().add(byte_offset);
+                // SAFETY: `strings` carries 8 bytes of tail padding (see `new` and
+                // the deserializer), and a decodable k-mer starts before the logical
+                // end, so `byte_offset + 8` is always within the allocation. This is
+                // the same maximum address the previous branching form could touch.
+                (std::ptr::read_unaligned(base as *const u64), *base.add(8) as u64)
             };
+            let result = (raw >> bit_shift) | ((extra << 1) << (63 - bit_shift));
+            let mask = (1u64 << needed_bits) - 1;
             Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(result & mask))
         } else {
             let needed_bytes = (needed_bits + bit_shift).div_ceil(8);
