@@ -35,7 +35,27 @@ rayon = { workspace = true }
 seq-macro = { workspace = true }
 
 # Fast, portable hashing (CPU-feature independent — no AES-NI divergence unlike ahash)
-rapidhash = "4"
+#
+# Pinned exactly, for the same reason `tiny-dict` pins it: `hasher.rs` derives
+# `DeterministicHasher`'s magic constant through `rapidhash::fast::RapidHasher`,
+# and rapidhash documents that module as explicitly *not* stable across versions
+# — "In-memory hash outputs (e.g. RapidHasher) may change between minor versions
+# to allow freely improving performance." Only the `v1`/`v2`/`v3` modules carry a
+# stability guarantee, and this is not one of them.
+#
+# That magic is recomputed at *load* time (`Dictionary` deserialization builds
+# `DeterministicHasher::new(1)`; the header stores k/m/canonical, not the magic)
+# and it feeds minimizer selection, which decides bucket layout. So a rapidhash
+# release that changed `fast::RapidHasher` would make a rebuilt binary compute
+# different minimizers and silently fail to find k-mers in `.ssi` indices built
+# earlier — no error, just a collapsed mapping rate. That is the same failure
+# class as the ahash/AES-NI divergence this crate moved to rapidhash to escape.
+#
+# `tiny-dict` additionally records the writing version in its `.tdct` header and
+# rejects unverified ones on load (`io::ACCEPTED_RAPIDHASH_VERSIONS`). `.ssi` has
+# no such check yet, which makes the pin the only guard here — do not relax it to
+# a caret requirement without adding one.
+rapidhash = "=4.5.1"
 
 # Value-based slice traits (used by sux BitFieldVec)
 value-traits = "0.2"
