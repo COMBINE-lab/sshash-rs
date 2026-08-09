@@ -313,6 +313,54 @@ pub struct TinyDictionary {
     m: usize,
     canonical: bool,
     /// canonical k-mer bits (u64) → packed (string_id, kmer_id_in_string, spss_is_canonical)
+    ///
+    /// # Why hashbrown and not PHast
+    ///
+    /// sshash indexes its k-mers with a PHast MPHF (`ph-temp`), so the obvious
+    /// question is why this dictionary does not. Measured head-to-head in
+    /// August 2026; hashbrown was kept, but the result is closer than it looks
+    /// and is worth revisiting rather than treating as settled. Harness and
+    /// full tables live in the COMBINE-lab/piscem-rs repository, at
+    /// `scripts/hb-vs-phast` and `notes/hash-tables.md`.
+    ///
+    /// - **An MPHF is not a dictionary.** `phast::Function::get` returns a slot
+    ///   for *any* input, so a k-mer absent from the reference collides onto
+    ///   some other k-mer's slot. Answering "present?" means storing the key and
+    ///   comparing it — 8 bytes on top of the 8-byte value. PHast's famous
+    ///   ~2.1 bits/key is then a rounding error, and the real memory saving was
+    ///   **~16 %** at a dense load factor, not the 2× the headline suggests.
+    /// - **Speed depends on cache residency, not on the hash scheme.** On a
+    ///   32 MB L3: below ~1 M k-mers, where both structures fit, PHast was
+    ///   equal-to-faster (0.34–0.93× on lookup). Above ~3.6 M, where neither
+    ///   fits, hashbrown won by 1.3–1.5×.
+    /// - **The reference this exists for sits in PHast's best case, not its
+    ///   worst.** The 10x Flex v2 human probe panel is 1 498 349 distinct
+    ///   canonical k-mers at k=23, which puts this map at 2 097 152 buckets ×
+    ///   17 B = 35.7 MB — just *over* a 32 MB L3, where the PHast equivalent
+    ///   (24.4 MB) would fit. That is the configuration in which PHast measured
+    ///   0.47× on hits. Do not reach for "the panel is small, so hashbrown is
+    ///   fine"; it is not the size that decides this, it is the prefilter.
+    ///   Note also that 1.5 M lands at a 71 % load factor purely by where it
+    ///   falls relative to a power of two — a panel 25 % larger would double
+    ///   this map to 71 MB.
+    /// - **Build cost.** PHast constructed 18–53× slower (3.6 s vs 112 ms at
+    ///   7.3 M keys).
+    /// - **The prefilter already owns the miss path.** ~79 % of queried k-mers
+    ///   are absent on probe-panel references and never reach this map at all
+    ///   (see [`BlockedBloom`] and `lookup_core_bits`), so the table choice
+    ///   governs only the remaining ~21 % of lookups.
+    /// - **sshash's trick does not transfer.** sshash verifies a candidate by
+    ///   re-decoding the k-mer from the SPSS it must store anyway, so its
+    ///   verification is free. `lookup_core_bits` returns `(string_id,
+    ///   kmer_id)` straight out of `PackedValue` and never touches `spss`.
+    ///
+    /// If this is revisited, the variant worth measuring is **PHast verifying
+    /// against [`TinySpss`]** instead of a key array: that removes the 8-byte
+    /// key, taking the dictionary to ~8.3 B/key — a genuine 2–4× — at the cost
+    /// of one more dependent random access, which is exactly what already lost
+    /// PHast the large cases above. Worth it only if `TinyDictionary` starts
+    /// being used at sizes where its memory, rather than its speed, is the
+    /// complaint.
     index: HashMap<u64, PackedValue, TinyBuildHasher>,
     /// Negative prefilter over `index`'s key set. Answers the common
     /// "definitely absent" case without touching `index` at all. Derived, not
