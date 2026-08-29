@@ -30,6 +30,133 @@ use sshash_lib::{
 };
 
 pub mod io;
+mod prefilter;
+
+use prefilter::BlockedBloom;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Largest prefilter this will build, in bytes (8 bits/key, so 1 byte/key).
+///
+/// Gate A, and it is a *cache-residency* bound, not merely a memory bound.
+/// Relaxing it to 10% of the dictionary footprint was tried and measured
+/// clearly worse: a 114 MB filter cannot stay resident, so every search paid a
+/// cache miss *before* the hashbrown probe it was meant to avoid — +16.6% CPU
+/// on PBMC/gencode and +6.2% on bulk. 8 MB keeps the filter in cache and, in
+/// practice, restricts it to probe panels and similarly small references.
+const MAX_PREFILTER_BYTES: usize = 8 << 20;
+
+/// Gate B: dictionary searches sampled before deciding whether to consult the
+/// filter, and the miss rate required to enable it.
+///
+/// Gate A bounds the cost; this bounds the waste. A small reference queried by
+/// reads that mostly map would pay a filter probe per hit for no benefit, and
+/// no static property of the index can see that — it depends on the reads.
+const FILTER_SAMPLE_SEARCHES: u64 = 200_000;
+const FILTER_MIN_MISS_RATE: f64 = 0.70;
+
+/// Adaptive gate over the prefilter.
+///
+/// Note the population this observes: `lookup_core_bits` is reached only on a
+/// real dictionary *search*. Within-unitig extensions (`try_extend_fw`) and
+/// piscem's fast-positive skip check both resolve against the SPSS and return
+/// before this point, so neither is sampled and neither pays a filter probe.
+/// The miss rate here is therefore over searches, which is the population the
+/// filter actually serves — not over all read k-mers.
+#[derive(Debug)]
+pub(crate) struct FilterGate {
+    consult: AtomicBool,
+    sampling: AtomicBool,
+    searches: AtomicU64,
+    misses: AtomicU64,
+}
+
+impl FilterGate {
+    fn new(has_filter: bool) -> Self {
+        Self {
+            // Start *not* consulting: sample first, enable only on evidence.
+            consult: AtomicBool::new(false),
+            sampling: AtomicBool::new(has_filter),
+            searches: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+        }
+    }
+
+    #[inline(always)]
+    fn should_consult(&self) -> bool {
+        self.consult.load(Ordering::Relaxed)
+    }
+
+    /// Record one search outcome while sampling. Costs two relaxed increments
+    /// for the first `FILTER_SAMPLE_SEARCHES` searches only, then nothing.
+    #[inline]
+    fn observe(&self, missed: bool) {
+        if !self.sampling.load(Ordering::Relaxed) {
+            return;
+        }
+        if missed {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        let n = self.searches.fetch_add(1, Ordering::Relaxed) + 1;
+        if n >= FILTER_SAMPLE_SEARCHES {
+            let miss_rate =
+                self.misses.load(Ordering::Relaxed) as f64 / n as f64;
+            let on = miss_rate >= filter_min_miss_rate();
+            self.consult.store(on, Ordering::Relaxed);
+            self.sampling.store(false, Ordering::Relaxed);
+            tracing::debug!(
+                "tiny-dict prefilter: sampled {n} searches, {:.1}% missed -> {}",
+                100.0 * miss_rate,
+                if on { "ENABLED" } else { "disabled" }
+            );
+        }
+    }
+
+    /// Observed search-miss rate, and whether the filter ended up consulted.
+    #[allow(dead_code)]
+    pub fn report(&self) -> (u64, u64, bool) {
+        (
+            self.searches.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+            self.consult.load(Ordering::Relaxed),
+        )
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn filter_min_miss_rate() -> f64 {
+    std::env::var("PISCEM_TINY_PREFILTER_MIN_MISS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(FILTER_MIN_MISS_RATE)
+}
+
+/// Build the negative prefilter subject to Gate A (size).
+///
+/// `PISCEM_TINY_PREFILTER=0` forces it off; `=1` forces it on regardless of
+/// size. Both exist for measurement, not for normal use.
+pub(crate) fn build_prefilter(
+    index: &HashMap<u64, PackedValue, TinyBuildHasher>,
+) -> Option<BlockedBloom> {
+    match std::env::var("PISCEM_TINY_PREFILTER").ok().as_deref() {
+        Some("0") => return None,
+        Some("1") => return Some(BlockedBloom::build(index.keys().copied(), index.len())),
+        _ => {}
+    }
+    let n = index.len();
+    let max_bytes = env_usize("PISCEM_TINY_PREFILTER_MAX_BYTES", MAX_PREFILTER_BYTES);
+    if n > max_bytes {
+        tracing::debug!(
+            "tiny-dict prefilter: {n} k-mers would need ~{} MB (> {} MB cap); not built",
+            n >> 20,
+            max_bytes >> 20
+        );
+        return None;
+    }
+    Some(BlockedBloom::build(index.keys().copied(), index.len()))
+}
 
 /// BuildHasher for the TinyDictionary hashmap.
 ///
@@ -186,7 +313,65 @@ pub struct TinyDictionary {
     m: usize,
     canonical: bool,
     /// canonical k-mer bits (u64) → packed (string_id, kmer_id_in_string, spss_is_canonical)
+    ///
+    /// # Why hashbrown and not PHast
+    ///
+    /// sshash indexes its k-mers with a PHast MPHF (`ph-temp`), so the obvious
+    /// question is why this dictionary does not. Measured head-to-head in
+    /// August 2026; hashbrown was kept, but the result is closer than it looks
+    /// and is worth revisiting rather than treating as settled. Harness and
+    /// full tables live in the COMBINE-lab/piscem-rs repository, at
+    /// `scripts/hb-vs-phast` and `notes/hash-tables.md`.
+    ///
+    /// - **An MPHF is not a dictionary.** `phast::Function::get` returns a slot
+    ///   for *any* input, so a k-mer absent from the reference collides onto
+    ///   some other k-mer's slot. Answering "present?" means storing the key and
+    ///   comparing it — 8 bytes on top of the 8-byte value. PHast's famous
+    ///   ~2.1 bits/key is then a rounding error, and the real memory saving was
+    ///   **~16 %** at a dense load factor, not the 2× the headline suggests.
+    /// - **Speed depends on cache residency, not on the hash scheme.** On a
+    ///   32 MB L3: below ~1 M k-mers, where both structures fit, PHast was
+    ///   equal-to-faster (0.34–0.93× on lookup). Above ~3.6 M, where neither
+    ///   fits, hashbrown won by 1.3–1.5×.
+    /// - **The reference this exists for sits in PHast's best case, not its
+    ///   worst.** The 10x Flex v2 human probe panel is 1 498 349 distinct
+    ///   canonical k-mers at k=23, which puts this map at 2 097 152 buckets ×
+    ///   17 B = 35.7 MB — just *over* a 32 MB L3, where the PHast equivalent
+    ///   (24.4 MB) would fit. That is the configuration in which PHast measured
+    ///   0.47× on hits. Do not reach for "the panel is small, so hashbrown is
+    ///   fine"; it is not the size that decides this, it is the prefilter.
+    ///   Note also that 1.5 M lands at a 71 % load factor purely by where it
+    ///   falls relative to a power of two — a panel 25 % larger would double
+    ///   this map to 71 MB.
+    /// - **Build cost.** PHast constructed 18–53× slower (3.6 s vs 112 ms at
+    ///   7.3 M keys).
+    /// - **The prefilter already owns the miss path.** ~79 % of queried k-mers
+    ///   are absent on probe-panel references and never reach this map at all
+    ///   (see [`BlockedBloom`] and `lookup_core_bits`), so the table choice
+    ///   governs only the remaining ~21 % of lookups.
+    /// - **sshash's trick does not transfer.** sshash verifies a candidate by
+    ///   re-decoding the k-mer from the SPSS it must store anyway, so its
+    ///   verification is free. `lookup_core_bits` returns `(string_id,
+    ///   kmer_id)` straight out of `PackedValue` and never touches `spss`.
+    ///
+    /// If this is revisited, the variant worth measuring is **PHast verifying
+    /// against [`TinySpss`]** instead of a key array: that removes the 8-byte
+    /// key, taking the dictionary to ~8.3 B/key — a genuine 2–4× — at the cost
+    /// of one more dependent random access, which is exactly what already lost
+    /// PHast the large cases above. Worth it only if `TinyDictionary` starts
+    /// being used at sizes where its memory, rather than its speed, is the
+    /// complaint.
     index: HashMap<u64, PackedValue, TinyBuildHasher>,
+    /// Negative prefilter over `index`'s key set. Answers the common
+    /// "definitely absent" case without touching `index` at all. Derived, not
+    /// serialized — see [`prefilter`].
+    ///
+    /// `None` disables it: a Bloom probe is pure overhead on a *hit*, since the
+    /// hashbrown probe still has to run afterwards. Whether it pays depends on
+    /// the miss rate of the workload, not on the dictionary.
+    bloom: Option<BlockedBloom>,
+    /// Adaptive gate deciding whether `bloom` is consulted at all.
+    gate: FilterGate,
 }
 
 impl TinyDictionary {
@@ -245,12 +430,17 @@ impl TinyDictionary {
             }
         }
 
+        let bloom = build_prefilter(&index);
+        let gate = FilterGate::new(bloom.is_some());
+
         Self {
             spss,
             k: K,
             m: dict.m(),
             canonical: dict.canonical(),
             index,
+            bloom,
+            gate,
         }
     }
 
@@ -285,7 +475,20 @@ impl TinyDictionary {
     /// Bit-level core lookup: caller has already parsed and canonicalized.
     #[inline]
     fn lookup_core_bits(&self, canon_bits: u64, query_fw_is_canonical: bool) -> Option<(u32, u32, i64)> {
-        let packed = *self.index.get(&canon_bits)?;
+        // Negative prefilter: no false negatives, so a `false` here is proof of
+        // absence and skips the hashbrown probe entirely. On probe-panel
+        // references ~79% of queried k-mers are absent, and this is where that
+        // is turned into ~12 instructions instead of a full group probe.
+        if self.gate.should_consult()
+            && let Some(bloom) = &self.bloom
+            && !bloom.might_contain(canon_bits)
+        {
+            self.gate.observe(true);
+            return None;
+        }
+        let found = self.index.get(&canon_bits);
+        self.gate.observe(found.is_none());
+        let packed = *found?;
         let string_id = unpack_string_id(packed);
         let kmer_id = unpack_kmer_id(packed);
         let spss_is_canonical = unpack_spss_is_canonical(packed);

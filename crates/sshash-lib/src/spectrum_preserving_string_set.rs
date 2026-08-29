@@ -219,19 +219,29 @@ impl SpectrumPreservingStringSet {
         let needed_bits = K * 2;
 
         if K <= 31 {
-            // K<=31: need at most 62+6=68 bits. Load u64 (64 bits) from byte_offset,
-            // then grab one more byte if bit_shift > 2 causes overflow.
-            let raw = unsafe {
-                std::ptr::read_unaligned(
-                    self.strings.as_ptr().add(byte_offset) as *const u64
-                )
+            // K<=31: need at most 62+6=68 bits, so a u64 at `byte_offset` plus the
+            // one byte the top bits can spill into.
+            //
+            // The spill is folded in unconditionally. `bit_shift` is `(pos % 4) * 2`,
+            // so it is one of {0, 2, 4, 6} and the spill only actually matters for
+            // {4, 6} — i.e. a branch that is taken for half of all positions, on a
+            // value derived from the read position, so it does not predict. Making
+            // it branchless is worth more than the byte load it saves.
+            //
+            // `(extra << 1) << (63 - bit_shift)` equals the wanted
+            // `extra << (64 - bit_shift)` for bit_shift in {2, 4, 6}, and is
+            // identically zero for bit_shift == 0 (the `<< 1` clears the only bit
+            // that would survive `<< 63`). That dodges the shift-by-64 UB that
+            // makes the direct expression unusable without the branch.
+            let (raw, extra) = unsafe {
+                let base = self.strings.as_ptr().add(byte_offset);
+                // SAFETY: `strings` carries 8 bytes of tail padding (see `new` and
+                // the deserializer), and a decodable k-mer starts before the logical
+                // end, so `byte_offset + 8` is always within the allocation. This is
+                // the same maximum address the previous branching form could touch.
+                (std::ptr::read_unaligned(base as *const u64), *base.add(8) as u64)
             };
-            let mut result = raw >> bit_shift;
-            if bit_shift > 2 {
-                // High bits of the kmer spill into byte_offset+8
-                let extra = unsafe { *self.strings.as_ptr().add(byte_offset + 8) };
-                result |= (extra as u64) << (64 - bit_shift);
-            }
+            let result = (raw >> bit_shift) | ((extra << 1) << (63 - bit_shift));
             let mask = (1u64 << needed_bits) - 1;
             Kmer::<K>::new(<Kmer<K> as KmerBits>::from_u64(result & mask))
         } else {
@@ -342,6 +352,42 @@ impl std::fmt::Debug for SpectrumPreservingStringSet {
 mod tests {
     use super::*;
     use crate::offsets::OffsetsVector;
+
+    /// The `K <= 31` arm of `decode_kmer_at` folds the spill byte in without a
+    /// branch. Pin that it computes exactly what the branching form did, over
+    /// every `(bit_shift, K)` combination that can actually occur — `bit_shift`
+    /// is `(pos % 4) * 2`, and K is odd in `3..=31` on this arm.
+    #[test]
+    fn branchless_spill_matches_branching_form() {
+        fn branching(raw: u64, extra: u8, bit_shift: usize, needed_bits: usize) -> u64 {
+            let mut result = raw >> bit_shift;
+            if bit_shift > 2 {
+                result |= (extra as u64) << (64 - bit_shift);
+            }
+            result & ((1u64 << needed_bits) - 1)
+        }
+        fn branchless(raw: u64, extra: u8, bit_shift: usize, needed_bits: usize) -> u64 {
+            let result = (raw >> bit_shift) | (((extra as u64) << 1) << (63 - bit_shift));
+            result & ((1u64 << needed_bits) - 1)
+        }
+
+        let mut s: u64 = 0x243F_6A88_85A3_08D3;
+        for _ in 0..20_000 {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let extra = (s >> 11) as u8;
+            for bit_shift in [0usize, 2, 4, 6] {
+                for k in (3..=31).step_by(2) {
+                    assert_eq!(
+                        branching(s, extra, bit_shift, k * 2),
+                        branchless(s, extra, bit_shift, k * 2),
+                        "raw={s:#x} extra={extra:#x} bit_shift={bit_shift} k={k}"
+                    );
+                }
+            }
+        }
+    }
 
     /// Helper: build a test SPSS from DNA strings using the same Encoder
     /// logic (2-bit packing with offsets).
