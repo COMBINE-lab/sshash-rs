@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1] - 2026-08-30
+
+### Fixes
+
+- `Cargo.lock` no longer pins the yanked `chacha20 0.10.0` (transitive via
+  `rand 0.10` / `sux`); updated to 0.10.2. A full sweep of the lockfile
+  found no other yanked versions. Library code is unchanged.
+
 ## [0.7.0] - 2026-08-30
 
 ### Breaking Changes
