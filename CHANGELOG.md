@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.7.0] - unreleased
+
+### Breaking Changes
+
+- **One indexing modality** (port of C++ SSHash v6.0.0): the minimizer of a
+  k-mer x is now the locus minimizing `h(kappa(i))`, where `kappa(i)` is the
+  canonical m-mer at locus i, with the centre-closest tie-break (Cologni &
+  Pibiri, Proposition 24). The scheme is mirror-equivariant (a k-mer and its
+  reverse complement share a bucket: one probe, orientation always reported)
+  at plain forward density — the old canonical mode paid a 4/3 super-kmer
+  density factor for the same answers. Regular (non-canonical) mode is
+  removed: `BuildConfiguration.canonical` and `Dictionary::canonical()` are
+  deprecated no-ops, CLI `--canonical` warns. The forward-only query family
+  (`query_forward`, `lookup_forward`, `*_checked(…, false)`, CLI
+  `--forward-only`, python `forward_only=`) keeps C++ v6 semantics: the
+  ordinary single-probe lookup runs, and a match found in backward
+  orientation reports not-found — i.e. answers are restricted to k-mers
+  occurring in forward orientation in the indexed strings. (On the old
+  canonical mode the flag was documented as ignored; it is now honored.)
+- **Index format v5.0**: indices built with 0.6.x must be rebuilt. The header
+  now records the build seed and a hasher-magic guard (a rapidhash behavior
+  change now fails loudly at load instead of silently corrupting minimizer
+  selection).
+- `Dictionary::new` takes the build seed instead of a canonical flag;
+  `SparseAndSkewIndex`/`SkewIndex` builders lose their `canonical` parameter.
+
+### Performance
+
+- Builder: canonical extraction no longer runs a fresh full-rescan RC
+  minimizer iterator per k-mer; one iterator serves both strands.
+- Point lookup: one minimizer scan and one bucket probe (was two scans and up
+  to two probes), with exactly two candidate text positions per occurrence.
+- Streaming: same-minimizer memos (C++ c22c897) — minimizer-absent negatives,
+  singleton same-occurrence skips, and a cached decoded locate set verified
+  without MPHF or offset work. New counters in `StreamingQueryStats`.
+- Expected from the C++ measurements: ~22% fewer super-kmers and ~0.5-0.7
+  bits/kmer smaller than the old canonical mode, faster builds, and 9-11%
+  faster streaming on error-containing reads.
+
+### Fixes
+
+- Wide-K (K >= 33) streaming extension used u64 operations on u128 k-mer
+  storage (`try_extend` top-base extract, `append_base` mask): debug panic /
+  wrong results in release. Analogue of C++ 87cab5f.
+- Queries now hash with the seed the index was built with; previously a
+  non-default `BuildConfiguration.seed` produced an index that returned zero
+  hits (queries hard-coded seed 1).
+- The build now aborts with "the minimizer scheme is not forward" if a
+  duplicate (minimizer, position) pair would mis-size the index.
+
 ## [0.6.0] - 2025-05-07
 
 ### Breaking Changes

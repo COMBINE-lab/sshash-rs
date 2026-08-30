@@ -24,7 +24,6 @@ fn build_sshash(sequences: Vec<String>) -> sshash_lib::Dictionary {
     let config = BuildConfiguration {
         k: K,
         m: M,
-        canonical: true,
         num_threads: 1,
         verbose: false,
         ..BuildConfiguration::default()
@@ -74,7 +73,7 @@ fn tiny_dict_parity_all_kmers() {
 
     assert_eq!(tiny.k(), sshash.k());
     assert_eq!(tiny.m(), sshash.m());
-    assert_eq!(tiny.canonical(), sshash.canonical());
+    assert!(tiny.canonical());
 
     let mut found_count = 0u64;
     for seq in &sequences {

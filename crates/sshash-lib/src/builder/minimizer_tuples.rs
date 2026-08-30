@@ -41,19 +41,9 @@ use super::external_sort::{ExternalSorter, MinimizerTupleExternal, GIB};
 /// This is the fundamental unit for indexing. Each tuple represents a
 /// minimizer occurrence in the input and tracks where it appears.
 ///
-/// # Canonical Mode Orientation Handling
-///
-/// In canonical mode, when a k-mer's reverse complement minimizer is smaller
-/// than the forward minimizer, we use the RC minimizer BUT adjust `pos_in_kmer`
-/// to reflect the position in the **forward** k-mer:
-///
-/// ```text
-/// If RC minimizer is chosen:
-///   pos_in_kmer = (k - m) - original_rc_pos
-/// ```
-///
-/// This elegantly encodes orientation implicitly without needing a separate flag.
-/// The minimizer position is always relative to the forward k-mer representation.
+/// The minimizer value is the canonical m-mer at the anchored locus (the
+/// unified scheme), and `pos_in_kmer` is the locus in the forward frame of
+/// the SPSS string; a lookup probes both `pos` and its mirror `k - m - pos`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MinimizerTuple {
     /// The minimizer value (m-mer)
@@ -62,10 +52,8 @@ pub struct MinimizerTuple {
     /// Position of the minimizer in the sequence (in bases from string start)
     pub pos_in_seq: u64,
 
-    /// Position of the minimizer within the k-mer (0 to k-m)
-    ///
-    /// In canonical mode, this is ALWAYS relative to the forward k-mer,
-    /// even when the RC minimizer is chosen (adjusted accordingly).
+    /// The selected locus within the k-mer window (0 to k-m), in the
+    /// forward frame of the stored string.
     pub pos_in_kmer: u8,
 
     /// Number of consecutive k-mers that share this minimizer (super-k-mer size)
@@ -106,7 +94,7 @@ impl Ord for MinimizerTuple {
 /// Compute minimizer tuples from an encoded SPSS (parallelized with rayon)
 ///
 /// This function extracts all k-mers from the SPSS, computes their minimizers
-/// (with canonical mode handling), and produces sorted, coalesced MinimizerTuples.
+/// (the unified canonical scheme), and produces sorted, coalesced MinimizerTuples.
 ///
 /// # Parallelism
 ///
@@ -117,13 +105,6 @@ impl Ord for MinimizerTuple {
 ///
 /// The rayon thread pool size is controlled by the caller (typically
 /// `DictionaryBuilder` installs a pool sized to `config.num_threads`).
-///
-/// # Canonical Mode Orientation
-///
-/// When canonical mode is enabled, for each k-mer we compute both forward and
-/// reverse-complement minimizers. If the RC minimizer is smaller, we use it BUT
-/// adjust the position: `pos_in_kmer = (k - m) - rc_pos`. This ensures pos_in_kmer
-/// always represents the position relative to the forward k-mer.
 ///
 /// # Returns
 ///
@@ -205,42 +186,20 @@ where
         // Decode k-mer from SPSS
         let kmer = spss.decode_kmer::<K>(string_id, kmer_pos);
 
-        // Compute forward minimizer using PERSISTENT iterator state
-        let forward_minimizer = minimizer_iter.next(kmer);
-
-        let (final_minimizer, final_pos_in_kmer) = if config.canonical {
-            // Compute RC minimizer using a FRESH iterator (not sequential).
-            // RC k-mers slide in the opposite direction (new base at front,
-            // not at end), so the sequential sliding optimization gives wrong
-            // results. A fresh iterator always does a full rescan, matching
-            // the query-time behavior exactly.
-            let kmer_rc = kmer.reverse_complement();
-            let mut fresh_rc_iter = MinimizerIterator::with_seed(k, m, config.seed);
-            let rc_minimizer = fresh_rc_iter.next(kmer_rc);
-
-            // Choose smaller minimizer (compare by value, which is deterministic)
-            if rc_minimizer.value < forward_minimizer.value {
-                // RC minimizer wins - adjust position to forward k-mer frame
-                let adjusted_pos = (k - m) as u8 - rc_minimizer.pos_in_kmer as u8;
-                (rc_minimizer.value, adjusted_pos)
-            } else {
-                (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-            }
-        } else {
-            // Non-canonical mode: just use forward minimizer
-            (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-        };
-
-        // Store absolute position of minimizer in concatenated SPSS
-        // (matching C++ decoded_offsets approach)
-        // absolute_pos = string_begin + kmer_pos + pos_in_kmer
-        // During lookup, we recover: kmer_start = absolute_pos - pos_in_kmer
-        let absolute_pos_in_seq = string_begin + kmer_pos as u64 + final_pos_in_kmer as u64;
+        // The unified canonical scheme: one iterator, one order, both strands.
+        // `position` is the absolute (tie-broken) minimizer position in the
+        // concatenated SPSS; lookup recovers kmer_start = pos_in_seq - pos_in_kmer.
+        let kmer_rc = kmer.reverse_complement();
+        let mini = minimizer_iter.next(&kmer, &kmer_rc);
+        debug_assert_eq!(
+            mini.position,
+            string_begin + kmer_pos as u64 + mini.pos_in_kmer as u64
+        );
 
         let current_mini = MinimizerTuple {
-            minimizer: final_minimizer,
-            pos_in_seq: absolute_pos_in_seq,
-            pos_in_kmer: final_pos_in_kmer,
+            minimizer: mini.value,
+            pos_in_seq: mini.position,
+            pos_in_kmer: mini.pos_in_kmer as u8,
             num_kmers_in_super_kmer: 1, // Will be updated during coalescing
         };
 
@@ -315,8 +274,8 @@ pub fn needs_external_sorting(total_kmers: u64, ram_limit_gib: usize) -> bool {
 ///
 /// # Returns
 /// Sorted vector of MinimizerTuples (loaded from merged temp file).
-/// For large datasets, prefer [`compute_minimizer_tuples_external_mmap`] which
-/// returns an mmap'd view instead of materializing all tuples.
+/// For large datasets, prefer [`compute_minimizer_tuples_external_file`],
+/// which returns a file handle instead of materializing all tuples.
 pub fn compute_minimizer_tuples_external<const K: usize>(
     spss: &SpectrumPreservingStringSet,
     config: &BuildConfiguration,
@@ -330,7 +289,8 @@ where
 
 /// Compute minimizer tuples using external sorting, returning a file handle.
 ///
-/// Like [`compute_minimizer_tuples_external`], but returns a [`FileTuples`]
+/// Like [`compute_minimizer_tuples_external`], but returns a
+/// [`FileTuples`](super::external_sort::FileTuples)
 /// instead of materializing all tuples in memory. This is the production path
 /// for large datasets — tuples are accessed sequentially via buffered I/O.
 pub fn compute_minimizer_tuples_external_file<const K: usize>(
@@ -462,29 +422,18 @@ where
 
         for kmer_pos in 0..num_kmers {
             let kmer = spss.decode_kmer::<K>(string_id as u64, kmer_pos);
-            let forward_minimizer = minimizer_iter.next(kmer);
-
-            let (final_minimizer, final_pos_in_kmer) = if config.canonical {
-                let kmer_rc = kmer.reverse_complement();
-                let mut fresh_rc_iter = MinimizerIterator::with_seed(k, m, config.seed);
-                let rc_minimizer = fresh_rc_iter.next(kmer_rc);
-
-                if rc_minimizer.value < forward_minimizer.value {
-                    let adjusted_pos = (k - m) as u8 - rc_minimizer.pos_in_kmer as u8;
-                    (rc_minimizer.value, adjusted_pos)
-                } else {
-                    (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-                }
-            } else {
-                (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-            };
-
-            let absolute_pos_in_seq = string_begin + kmer_pos as u64 + final_pos_in_kmer as u64;
+            // The unified canonical scheme (see extract_tuples_for_string).
+            let kmer_rc = kmer.reverse_complement();
+            let mini = minimizer_iter.next(&kmer, &kmer_rc);
+            debug_assert_eq!(
+                mini.position,
+                string_begin + kmer_pos as u64 + mini.pos_in_kmer as u64
+            );
 
             let current = MinimizerTupleExternal {
-                minimizer: final_minimizer,
-                pos_in_seq: absolute_pos_in_seq,
-                pos_in_kmer: final_pos_in_kmer,
+                minimizer: mini.value,
+                pos_in_seq: mini.position,
+                pos_in_kmer: mini.pos_in_kmer as u8,
                 num_kmers_in_super_kmer: 1,
             };
 
@@ -595,9 +544,7 @@ mod tests {
         use crate::builder::config::BuildConfiguration;
         use crate::builder::encode::Encoder;
         
-        // Build SPSS in canonical mode
-        let mut config = BuildConfiguration::new(31, 13).unwrap();
-        config.canonical = true;
+        let config = BuildConfiguration::new(31, 13).unwrap();
         let mut encoder = Encoder::<31>::new();
         
         // Add a sequence

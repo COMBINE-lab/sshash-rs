@@ -171,6 +171,7 @@ impl KmerDictionary for Dictionary {
 
     #[inline]
     fn canonical(&self) -> bool {
+        #[allow(deprecated)]
         Dictionary::canonical(self)
     }
 

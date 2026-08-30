@@ -10,7 +10,18 @@ use pyo3::prelude::*;
 use sshash_lib::builder::{parse_cf_seg, BuildConfiguration, DictionaryBuilder};
 use sshash_lib::builder::parse::parse_sequences;
 use sshash_lib::{dispatch_on_k, Dictionary, Kmer, KmerBits, LookupResult, StreamingQuery};
+use std::ffi::CStr;
 use std::sync::Arc;
+
+/// Emit a Python DeprecationWarning (visible with `-W default` / pytest).
+fn warn_deprecated(py: Python<'_>, message: &'static CStr) -> PyResult<()> {
+    PyErr::warn(
+        py,
+        &py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        message,
+        1,
+    )
+}
 
 // ─── Hit ─────────────────────────────────────────────────────────────────────
 
@@ -92,7 +103,7 @@ where
     Kmer<K>: KmerBits,
 {
     fn new(dict: Arc<Dictionary>) -> Self {
-        let query = StreamingQuery::new(dict.k(), dict.m(), dict.canonical());
+        let query = StreamingQuery::with_seed(dict.k(), dict.m(), dict.seed());
         ConcreteEngine { query, dict }
     }
 }
@@ -178,7 +189,7 @@ where
 
     fn k(&self) -> usize { self.inner.k() }
     fn m(&self) -> usize { self.inner.m() }
-    fn canonical(&self) -> bool { self.inner.canonical() }
+    fn canonical(&self) -> bool { true } // always canonical since 0.7.0
     fn num_strings(&self) -> u64 { self.inner.num_strings() }
     fn num_bits(&self) -> u64 { self.inner.num_bits() }
 
@@ -238,7 +249,7 @@ impl PyDictionary {
 
     /// Whether this index was built in canonical mode.
     #[getter]
-    fn canonical(&self) -> bool { self.inner.canonical() }
+    fn canonical(&self) -> bool { true } // always canonical since 0.7.0
 
     /// Number of strings (unitigs) in the index.
     #[getter]
@@ -248,12 +259,14 @@ impl PyDictionary {
     #[getter]
     fn num_bits(&self) -> u64 { self.inner.num_bits() }
 
-    /// Return the global k-mer ID, or ``None`` if the k-mer is not in the index.
+    /// Return the k-mer's absolute base offset in the concatenated string set
+    /// (``kmer_offset``), or ``None`` if the k-mer is not in the index. For the
+    /// global k-mer ID and full location information use :meth:`query`.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: If ``True``, perform a strand-specific lookup that does
-    ///     not fall back to the reverse complement (only meaningful for
-    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
+    /// :param forward_only: If ``True``, restrict the lookup to k-mers
+    ///     occurring in forward orientation in the indexed strings (an
+    ///     RC-orientation match reports absent). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
     fn lookup(&self, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
@@ -263,9 +276,9 @@ impl PyDictionary {
     /// Return a :class:`Hit` with full location information, or ``None`` if not found.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: If ``True``, perform a strand-specific query that does
-    ///     not fall back to the reverse complement (only meaningful for
-    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
+    /// :param forward_only: If ``True``, restrict the query to k-mers
+    ///     occurring in forward orientation in the indexed strings (an
+    ///     RC-orientation match reports absent). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
     fn query(&self, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
@@ -275,9 +288,9 @@ impl PyDictionary {
     /// Return ``True`` if the k-mer is present in the index.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: If ``True``, perform a strand-specific membership test
-    ///     that does not fall back to the reverse complement (only meaningful for
-    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
+    /// :param forward_only: If ``True``, restrict the membership test to k-mers
+    ///     occurring in forward orientation in the indexed strings (an
+    ///     RC-orientation match reports absent). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
     fn contains(&self, kmer: &str, forward_only: bool) -> PyResult<bool> {
@@ -404,7 +417,7 @@ impl SequenceIterator {
         // The block ends the immutable borrow of slf.seq before lookup() borrows
         // slf.engine mutably — the two borrows go through the same PyRefMut.
         let kmer_bytes: Vec<u8> = {
-            let s: &SequenceIterator = &*slf;
+            let s: &SequenceIterator = &slf;
             s.seq[s.pos..s.pos + s.k].to_owned()
         };
         let result = slf.engine.lookup(&kmer_bytes);
@@ -423,7 +436,6 @@ impl SequenceIterator {
 /// Example::
 ///
 ///     config = sshash.BuildConfig(k=31, m=19)
-///     config.canonical = True
 ///     config.threads = 8
 ///     dict = config.build(["ACGTACGT...", "TTGCAACCG..."])
 #[pyclass(name = "BuildConfig")]
@@ -453,12 +465,15 @@ impl PyBuildConfig {
     #[getter]
     fn m(&self) -> usize { self.config.m }
 
-    /// Whether to build in canonical mode (k-mer and its reverse complement map to the same entry).
+    /// Deprecated: the index is always canonical since 0.7.0 (getter kept
+    /// for compatibility; the setter is ignored).
     #[getter]
-    fn canonical(&self) -> bool { self.config.canonical }
+    fn canonical(&self) -> bool { true }
 
     #[setter(canonical)]
-    fn set_canonical(&mut self, val: bool) { self.config.canonical = val; }
+    fn set_canonical(&mut self, py: Python<'_>, _val: bool) -> PyResult<()> {
+        warn_deprecated(py, c"BuildConfig.canonical is deprecated and ignored: the index is always canonical")
+    }
 
     /// Number of threads (0 = all available cores).
     #[getter]
@@ -567,10 +582,9 @@ impl PyBuildConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "BuildConfig(k={}, m={}, canonical={}, threads={}, ram_limit_gib={})",
+            "BuildConfig(k={}, m={}, threads={}, ram_limit_gib={})",
             self.config.k,
             self.config.m,
-            self.config.canonical,
             self.config.num_threads,
             self.config.ram_limit_gib,
         )

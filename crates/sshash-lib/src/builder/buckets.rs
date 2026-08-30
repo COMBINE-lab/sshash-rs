@@ -4,7 +4,7 @@
 //! and heavy (skew) categories based on bucket size.
 
 use crate::builder::minimizer_tuples::MinimizerTuple;
-use crate::constants::{INVALID_UINT64, MIN_L};
+use crate::constants::MIN_L;
 use tracing::info;
 
 /// Bucket size threshold between light and heavy buckets
@@ -64,15 +64,11 @@ impl BucketStatistics {
     /// Record statistics for a bucket
     pub fn add_bucket(&mut self, bucket: &[MinimizerTuple]) {
         self.num_buckets += 1;
-        let mut bucket_size: usize = 0;
-        let mut prev_pos_in_seq = INVALID_UINT64;
-        for tuple in bucket {
-            if tuple.pos_in_seq != prev_pos_in_seq {
-                bucket_size += 1;
-                prev_pos_in_seq = tuple.pos_in_seq;
-            }
-        }
-        
+        // Forward scheme: one tuple per minimizer position (enforced during
+        // classification/merge), so the size is just the tuple count.
+        debug_assert!(bucket.windows(2).all(|p| p[0].pos_in_seq != p[1].pos_in_seq));
+        let bucket_size: usize = bucket.len();
+
         if bucket_size > self.max_bucket_size {
             self.max_bucket_size = bucket_size;
         }
@@ -182,15 +178,7 @@ pub struct Bucket {
 impl Bucket {
     /// Create a new bucket
     pub fn new(minimizer: u64, tuples: Vec<MinimizerTuple>) -> Self {
-        let mut bucket_size: usize = 0;
-        let mut prev_pos_in_seq = INVALID_UINT64;
-        for tuple in &tuples {
-            if tuple.pos_in_seq != prev_pos_in_seq {
-                bucket_size += 1;
-                prev_pos_in_seq = tuple.pos_in_seq;
-            }
-        }
-        let bucket_type = BucketType::from_bucket_size(bucket_size);
+        let (bucket_size, bucket_type) = compute_bucket_size_from_slice(&tuples);
         Self {
             minimizer,
             tuples,
@@ -351,17 +339,24 @@ pub fn classify_into_buckets_inplace(tuples: Vec<MinimizerTuple>) -> ClassifiedB
     }
 }
 
-/// Count unique super-kmers and classify a bucket from a tuple slice.
+/// Size and classify a bucket from a (sorted) tuple slice.
+///
+/// The minimizer scheme is forward, so a position is never abandoned and
+/// later re-selected: each tuple carries a distinct `pos_in_seq` and the
+/// number of super-kmers equals the number of tuples. This function is the
+/// in-memory pipeline's enforcement point for that invariant: everything
+/// downstream sizes the index by the tuple count, so a violation must stop
+/// the build rather than corrupt it.
 fn compute_bucket_size_from_slice(tuples: &[MinimizerTuple]) -> (usize, BucketType) {
-    let mut bucket_size: usize = 0;
-    let mut prev_pos_in_seq = INVALID_UINT64;
-    for tuple in tuples {
-        if tuple.pos_in_seq != prev_pos_in_seq {
-            bucket_size += 1;
-            prev_pos_in_seq = tuple.pos_in_seq;
-        }
+    for pair in tuples.windows(2) {
+        assert_ne!(
+            pair[0].pos_in_seq, pair[1].pos_in_seq,
+            "the minimizer scheme is not forward: (minimizer {:#x}, pos_in_seq {}) \
+             occurs in more than one super-kmer",
+            pair[0].minimizer, pair[0].pos_in_seq
+        );
     }
-    (bucket_size, BucketType::from_bucket_size(bucket_size))
+    (tuples.len(), BucketType::from_bucket_size(tuples.len()))
 }
 
 #[cfg(test)]

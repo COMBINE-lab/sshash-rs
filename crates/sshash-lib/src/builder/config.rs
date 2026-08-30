@@ -28,7 +28,10 @@ pub struct BuildConfiguration {
     /// Typically 3.5-4.0 for minimal size, higher for faster queries
     pub lambda: f64,
     
-    /// Build in canonical mode (k-mer and reverse-complement map to same entry)
+    /// Ignored since 0.7.0: the index is always canonical (the unified
+    /// C++-v6-style minimizer scheme answers both strands at forward-mode
+    /// cost, so there is no modality to choose).
+    #[deprecated(since = "0.7.0", note = "the index is always canonical; this field is ignored")]
     pub canonical: bool,
     
     /// Use partitioned MPHF for parallel construction (default: true)
@@ -39,12 +42,19 @@ pub struct BuildConfiguration {
     
     /// Verbose output during construction
     pub verbose: bool,
+
+    /// Force the external-sort build path regardless of estimated size.
+    /// For tests and diagnostics (the two paths must produce identical
+    /// dictionaries); not exposed on the CLI.
+    #[doc(hidden)]
+    pub force_external_sort: bool,
     
     /// Directory for temporary files during construction
     pub tmp_dirname: PathBuf,
 }
 
 impl Default for BuildConfiguration {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             k: 31,
@@ -53,10 +63,11 @@ impl Default for BuildConfiguration {
             num_threads: 0, // 0 = use all available cores
             ram_limit_gib: 8,
             lambda: 6.0,  // C++ default
-            canonical: false,
+            canonical: true,
             partitioned_mphf: true,
             weighted: false,
             verbose: true,
+            force_external_sort: false,
             tmp_dirname: PathBuf::from("sshash_tmp"),
         }
     }
@@ -77,7 +88,7 @@ impl BuildConfiguration {
     /// Validate the configuration parameters
     pub fn validate(&self) -> Result<(), String> {
         // Check k is odd and in valid range
-        if self.k % 2 == 0 {
+        if self.k.is_multiple_of(2) {
             return Err(format!("k must be odd, got k={}", self.k));
         }
         if self.k < 3 || self.k > 63 {
@@ -87,6 +98,12 @@ impl BuildConfiguration {
         // Check m is less than k
         if self.m >= self.k {
             return Err(format!("m must be less than k, got m={}, k={}", self.m, self.k));
+        }
+
+        // Minimizers are u64 values (and reverse_complement_mmer needs a
+        // sub-word shift), so m must fit 31 bases.
+        if self.m == 0 || self.m > 31 {
+            return Err(format!("m must be in range [1, 31], got m={}", self.m));
         }
         
         // Check lambda is reasonable
@@ -110,7 +127,6 @@ impl BuildConfiguration {
         }
         tracing::debug!("  ram_limit_gib = {}", self.ram_limit_gib);
         tracing::debug!("  lambda = {}", self.lambda);
-        tracing::info!("  canonical = {}", self.canonical);
         tracing::debug!("  weighted = {}", self.weighted);
         tracing::debug!("  verbose = {}", self.verbose);
         tracing::debug!("  tmp_dirname = {:?}", self.tmp_dirname);

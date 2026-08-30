@@ -34,7 +34,7 @@ use value_traits::slices::{SliceByValue, SliceByValueMut};
 /// 2. Using locate_bucket(bucket_id) to find the range [begin, end) in offsets
 /// 3. Size-based routing: linear scan for small buckets, MPHF for heavy buckets
 pub struct SparseAndSkewIndex {
-    /// Monotone Elias-Fano sequence: extras[i] = cumulative (bucket_size - 1)
+    /// Monotone Elias-Fano sequence: `extras[i]` = cumulative (bucket_size - 1)
     /// for buckets 0..i. Used to locate bucket boundaries:
     ///   begin = ef.access(id) + id
     ///   end   = ef.access(id+1) + id + 1
@@ -72,14 +72,13 @@ impl SparseAndSkewIndex {
 
     /// Build the sparse and skew index from owned `Bucket` objects (legacy API).
     ///
-    /// Prefer [`build_from_classified`] for production use — it avoids
+    /// Prefer [`Self::build_from_classified`] for production use — it avoids
     /// duplicating the tuple payload.
     pub fn build<const K: usize>(
         buckets: &[Bucket],
         mphf_order: Option<&[usize]>,
         num_bits_per_offset: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
-        canonical: bool,
     ) -> Self
     where
         Kmer<K>: KmerBits,
@@ -112,14 +111,12 @@ impl SparseAndSkewIndex {
         for orig_idx in 0..num_buckets {
             let bucket = &buckets[orig_idx];
             let size = bucket.size();
-            let mut idx = offset_start_by_orig[orig_idx] as usize;
-            let mut prev_pos_in_seq = INVALID_UINT64;
-            for tuple in &bucket.tuples {
-                if tuple.pos_in_seq != prev_pos_in_seq {
-                    offsets.set_value(idx, tuple.pos_in_seq as usize);
-                    idx += 1;
-                    prev_pos_in_seq = tuple.pos_in_seq;
-                }
+            let idx0 = offset_start_by_orig[orig_idx] as usize;
+            // Forward scheme: one tuple per minimizer position (enforced at
+            // classification/merge time), so every tuple is one write.
+            debug_assert!(bucket.tuples.windows(2).all(|p| p[0].pos_in_seq != p[1].pos_in_seq));
+            for (off, tuple) in bucket.tuples.iter().enumerate() {
+                offsets.set_value(idx0 + off, tuple.pos_in_seq as usize);
             }
             if size > MIN_BUCKET_SIZE { heavy_buckets_for_skew.push((orig_idx, size)); }
         }
@@ -132,7 +129,7 @@ impl SparseAndSkewIndex {
         let heavy_refs: Vec<(usize, &Bucket)> = heavy_buckets_for_skew.iter()
             .map(|&(orig_idx, _size)| (orig_idx, &buckets[orig_idx]))
             .collect();
-        let skew_index = SkewIndex::build::<K>(&heavy_refs, max_bucket_size, spss, canonical);
+        let skew_index = SkewIndex::build::<K>(&heavy_refs, max_bucket_size, spss);
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
         Self { num_super_kmers_before_bucket, offsets, skew_index }
@@ -146,7 +143,6 @@ impl SparseAndSkewIndex {
         mphf_order: Option<&[usize]>,
         num_bits_per_offset: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
-        canonical: bool,
     ) -> Self
     where
         Kmer<K>: KmerBits,
@@ -184,14 +180,11 @@ impl SparseAndSkewIndex {
         for orig_idx in 0..num_buckets {
             let bref = &classified.bucket_refs[orig_idx];
             let size = bref.cached_size;
-            let mut idx = offset_start_by_orig[orig_idx] as usize;
-            let mut prev_pos_in_seq = INVALID_UINT64;
-            for tuple in classified.bucket_tuples(orig_idx) {
-                if tuple.pos_in_seq != prev_pos_in_seq {
-                    offsets.set_value(idx, tuple.pos_in_seq as usize);
-                    idx += 1;
-                    prev_pos_in_seq = tuple.pos_in_seq;
-                }
+            let idx0 = offset_start_by_orig[orig_idx] as usize;
+            // Forward scheme: one tuple per minimizer position (enforced at
+            // classification/merge time), so every tuple is one write.
+            for (off, tuple) in classified.bucket_tuples(orig_idx).iter().enumerate() {
+                offsets.set_value(idx0 + off, tuple.pos_in_seq as usize);
             }
 
             if size > MIN_BUCKET_SIZE {
@@ -213,7 +206,6 @@ impl SparseAndSkewIndex {
             &heavy_buckets_for_skew,
             max_bucket_size,
             spss,
-            canonical,
         );
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
@@ -238,7 +230,6 @@ impl SparseAndSkewIndex {
         mphf_order: Option<Vec<usize>>,
         num_bits_per_offset: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
-        canonical: bool,
     ) -> Result<Self, std::io::Error>
     where
         Kmer<K>: KmerBits,
@@ -287,20 +278,18 @@ impl SparseAndSkewIndex {
             let size = bucket_meta.cached_sizes[bucket_idx] as usize;
             let is_heavy = size > MIN_BUCKET_SIZE;
 
+            // Forward scheme: one tuple per minimizer position (enforced at
+            // merge time), so every tuple is one offset write.
             let mut write_idx = offset_start_by_orig[bucket_idx] as usize;
-            let mut prev_pos_in_seq = INVALID_UINT64;
+            let mut prev_pos_in_seq;
 
             if is_heavy {
                 // Collect heavy bucket tuples during the forward scan
                 let mut bucket_tuples = Vec::new();
 
-                // Process the first tuple
-                let first_pos = first.pos_in_seq;
-                if first_pos != prev_pos_in_seq {
-                    offsets.set_value(write_idx, first_pos as usize);
-                    write_idx += 1;
-                    prev_pos_in_seq = first_pos;
-                }
+                offsets.set_value(write_idx, first.pos_in_seq as usize);
+                write_idx += 1;
+                prev_pos_in_seq = first.pos_in_seq;
                 bucket_tuples.push(first.to_internal());
 
                 // Read remaining tuples in this bucket
@@ -308,11 +297,10 @@ impl SparseAndSkewIndex {
                 while let Some(t) = next_tuple {
                     if t.minimizer != minimizer { break; }
                     let t_pos = t.pos_in_seq;
-                    if t_pos != prev_pos_in_seq {
-                        offsets.set_value(write_idx, t_pos as usize);
-                        write_idx += 1;
-                        prev_pos_in_seq = t_pos;
-                    }
+                    debug_assert_ne!(t_pos, prev_pos_in_seq);
+                    offsets.set_value(write_idx, t_pos as usize);
+                    write_idx += 1;
+                    prev_pos_in_seq = t_pos;
                     bucket_tuples.push(t.to_internal());
                     next_tuple = reader.read_next()?;
                 }
@@ -321,25 +309,22 @@ impl SparseAndSkewIndex {
                 heavy_tuples.push(bucket_tuples);
             } else {
                 // Stream non-heavy bucket tuples without materialization
-                let first_pos = first.pos_in_seq;
-                if first_pos != prev_pos_in_seq {
-                    offsets.set_value(write_idx, first_pos as usize);
-                    write_idx += 1;
-                    prev_pos_in_seq = first_pos;
-                }
+                offsets.set_value(write_idx, first.pos_in_seq as usize);
+                write_idx += 1;
+                prev_pos_in_seq = first.pos_in_seq;
 
                 next_tuple = reader.read_next()?;
                 while let Some(ext) = next_tuple {
                     if ext.minimizer != minimizer { break; }
                     let ext_pos = ext.pos_in_seq;
-                    if ext_pos != prev_pos_in_seq {
-                        offsets.set_value(write_idx, ext_pos as usize);
-                        write_idx += 1;
-                        prev_pos_in_seq = ext_pos;
-                    }
+                    debug_assert_ne!(ext_pos, prev_pos_in_seq);
+                    offsets.set_value(write_idx, ext_pos as usize);
+                    write_idx += 1;
+                    prev_pos_in_seq = ext_pos;
                     next_tuple = reader.read_next()?;
                 }
             }
+            let _ = prev_pos_in_seq;
 
             bucket_idx += 1;
         }
@@ -356,18 +341,10 @@ impl SparseAndSkewIndex {
         let tuples_iter = heavy_buckets_for_skew.iter()
             .map(|&(heavy_idx, _size)| {
                 let tuples = &heavy_tuples[heavy_idx];
-                // Compute cached_size from tuples
-                let mut bucket_size = 0usize;
-                let mut prev = INVALID_UINT64;
-                for t in tuples.iter() {
-                    if t.pos_in_seq != prev {
-                        bucket_size += 1;
-                        prev = t.pos_in_seq;
-                    }
-                }
-                (bucket_size, tuples.as_slice())
+                // Forward scheme: one tuple per position, so size == count.
+                (tuples.len(), tuples.as_slice())
             });
-        let skew_index = SkewIndex::build_inner::<K>(tuples_iter, max_bucket_size, spss, canonical);
+        let skew_index = SkewIndex::build_inner::<K>(tuples_iter, max_bucket_size, spss);
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
         Ok(Self {
@@ -551,12 +528,11 @@ impl SkewIndex {
 
     /// Build the skew index from heavy buckets (legacy API for tests).
     ///
-    /// See [`build_from_classified`] for the production path.
+    /// See [`Self::build_from_classified`] for the production path.
     pub fn build<const K: usize>(
         heavy_buckets: &[(usize, &Bucket)],
         max_bucket_size: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
-        canonical: bool,
     ) -> Self
     where
         Kmer<K>: KmerBits,
@@ -564,7 +540,7 @@ impl SkewIndex {
         // Adapt: extract tuple slices from the owned Bucket refs
         let tuples_iter = heavy_buckets.iter()
             .map(|&(_orig_idx, bucket)| (bucket.size(), bucket.tuples.as_slice()));
-        Self::build_inner::<K>(tuples_iter, max_bucket_size, spss, canonical)
+        Self::build_inner::<K>(tuples_iter, max_bucket_size, spss)
     }
 
     /// Build the skew index from [`ClassifiedBuckets`] heavy bucket refs.
@@ -573,7 +549,6 @@ impl SkewIndex {
         heavy_buckets_for_skew: &[(usize, usize)], // (orig_idx, size), sorted by size
         max_bucket_size: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
-        canonical: bool,
     ) -> Self
     where
         Kmer<K>: KmerBits,
@@ -583,7 +558,7 @@ impl SkewIndex {
                 let bref = &classified.bucket_refs[orig_idx];
                 (bref.cached_size, classified.bucket_tuples(orig_idx))
             });
-        Self::build_inner::<K>(tuples_iter, max_bucket_size, spss, canonical)
+        Self::build_inner::<K>(tuples_iter, max_bucket_size, spss)
     }
 
     /// Core skew index builder.
@@ -593,7 +568,6 @@ impl SkewIndex {
         heavy_buckets: impl Iterator<Item = (usize, &'a [MinimizerTuple])>,
         max_bucket_size: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
-        canonical: bool,
     ) -> Self
     where
         Kmer<K>: KmerBits,
@@ -660,15 +634,13 @@ impl SkewIndex {
                 }
             }
 
-            // Add k-mers from this bucket to current partition
+            // Add k-mers from this bucket to current partition. The scheme is
+            // forward: one tuple per super-kmer, so pos_in_bucket increments
+            // per tuple with no dedupe.
             let mut pos_in_bucket = 0u32;
-            let mut prev_pos_in_seq = INVALID_UINT64;
 
             for tuple in bucket_tuples {
-                if tuple.pos_in_seq != prev_pos_in_seq {
-                    prev_pos_in_seq = tuple.pos_in_seq;
-                    pos_in_bucket += 1;
-                }
+                pos_in_bucket += 1;
 
                 debug_assert!(tuple.pos_in_seq >= tuple.pos_in_kmer as u64);
                 let starting_kmer_pos =
@@ -676,15 +648,10 @@ impl SkewIndex {
 
                 for kmer_offset in 0..tuple.num_kmers_in_super_kmer {
                     let kmer: Kmer<K> = spss.decode_kmer_at(starting_kmer_pos + kmer_offset as usize);
-                    let mut kmer_value = kmer.bits();
-
-                    if canonical {
-                        let rc = kmer.reverse_complement();
-                        let rc_value = rc.bits();
-                        if rc_value < kmer_value {
-                            kmer_value = rc_value;
-                        }
-                    }
+                    // The skew MPHF keys on the canonical k-mer, matching the
+                    // canonical probe in the lookup path.
+                    let rc_value = kmer.reverse_complement().bits();
+                    let kmer_value = kmer.bits().min(rc_value);
 
                     partition_kmers.push(kmer_value);
                     partition_positions.push((pos_in_bucket - 1) as usize);
@@ -846,7 +813,7 @@ mod tests {
         let bucket = Bucket::new(100, vec![MinimizerTuple::new(100, 50, 0)]);
         let buckets = vec![bucket];
 
-        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
 
         // Should have 1 bucket
         assert_eq!(index.num_buckets(), 1);
@@ -876,7 +843,7 @@ mod tests {
         ]);
         let buckets = vec![bucket];
 
-        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
 
         // Should have 1 bucket with 3 offsets
         assert_eq!(index.num_buckets(), 1);
@@ -911,7 +878,7 @@ mod tests {
             Bucket::new(300, vec![MinimizerTuple::new(300, 200, 0)]), // Singleton
         ];
 
-        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
 
         assert_eq!(index.num_buckets(), 3);
         assert_eq!(index.num_offsets(), 4); // 1 + 2 + 1

@@ -57,7 +57,14 @@ const MPHF_MAGIC: &[u8; 8] = b"SSHIMH02";
 
 /// File format version: (major, minor)
 /// Increment major on breaking changes, minor on compatible changes
-const FORMAT_VERSION: (u32, u32) = (4, 0);
+///
+/// History:
+/// - (4, 0): multiply-XOR minimizer hash (sshash-rs 0.6)
+/// - (5, 0): unified canonical minimizer scheme (C++ SSHash v6 port,
+///   sshash-rs 0.7): canonical m-mer at forward density with the
+///   centre-closest tie-break; header gains `seed` and `hasher_magic`;
+///   the canonical flag is always 1.
+const FORMAT_VERSION: (u32, u32) = (5, 0);
 const MPHF_FORMAT_VERSION: (u32, u32) = (2, 0);
 
 /// Header for the serialized Dictionary
@@ -73,23 +80,33 @@ pub struct DictionarySerializationHeader {
     pub k: usize,
     /// Minimizer size
     pub m: usize,
-    /// Whether canonical mode is enabled
+    /// Always `true` since format 5.0 (the index is canonical by
+    /// construction); kept in the layout for header-peeking tools.
     pub canonical: bool,
     /// Number of MPHF partitions (for heavy buckets)
     pub num_mphf_partitions: u32,
+    /// The build seed; queries derive the minimizer hasher from it.
+    pub seed: u64,
+    /// `DeterministicHasher::new(seed).magic()` at build time. Recomputed and
+    /// compared on load: the magic is derived via rapidhash, so a rapidhash
+    /// behavior change (which would silently alter minimizer selection) fails
+    /// loudly here instead.
+    pub hasher_magic: u64,
 }
 
 impl DictionarySerializationHeader {
     /// Create a new header
-    pub fn new(k: usize, m: usize, canonical: bool, num_mphf_partitions: u32) -> Self {
+    pub fn new(k: usize, m: usize, seed: u64, num_mphf_partitions: u32) -> Self {
         Self {
             magic: *MAGIC,
             version_major: FORMAT_VERSION.0,
             version_minor: FORMAT_VERSION.1,
             k,
             m,
-            canonical,
+            canonical: true,
             num_mphf_partitions,
+            seed,
+            hasher_magic: crate::hasher::DeterministicHasher::new(seed).magic(),
         }
     }
 
@@ -102,6 +119,8 @@ impl DictionarySerializationHeader {
         writer.write_all(&(self.m as u64).to_le_bytes())?;
         writer.write_all(&[self.canonical as u8])?;
         writer.write_all(&self.num_mphf_partitions.to_le_bytes())?;
+        writer.write_all(&self.seed.to_le_bytes())?;
+        writer.write_all(&self.hasher_magic.to_le_bytes())?;
         Ok(())
     }
 
@@ -123,13 +142,11 @@ impl DictionarySerializationHeader {
         let mut m_bytes = [0u8; 8];
         let mut canonical_bytes = [0u8; 1];
         let mut num_partitions_bytes = [0u8; 4];
+        let mut seed_bytes = [0u8; 8];
+        let mut hasher_magic_bytes = [0u8; 8];
 
         reader.read_exact(&mut version_major_bytes)?;
         reader.read_exact(&mut version_minor_bytes)?;
-        reader.read_exact(&mut k_bytes)?;
-        reader.read_exact(&mut m_bytes)?;
-        reader.read_exact(&mut canonical_bytes)?;
-        reader.read_exact(&mut num_partitions_bytes)?;
 
         let version_major = u32::from_le_bytes(version_major_bytes);
         let version_minor = u32::from_le_bytes(version_minor_bytes);
@@ -138,8 +155,38 @@ impl DictionarySerializationHeader {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Incompatible format version: {}.{}, expected {}.{}",
+                    "Incompatible index format version {}.{} (this build reads {}.{}): \
+                     the index was written by a different sshash-rs release and must be rebuilt",
                     version_major, version_minor, FORMAT_VERSION.0, FORMAT_VERSION.1
+                ),
+            ));
+        }
+
+        reader.read_exact(&mut k_bytes)?;
+        reader.read_exact(&mut m_bytes)?;
+        reader.read_exact(&mut canonical_bytes)?;
+        reader.read_exact(&mut num_partitions_bytes)?;
+        reader.read_exact(&mut seed_bytes)?;
+        reader.read_exact(&mut hasher_magic_bytes)?;
+
+        if canonical_bytes[0] == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid header: format 5.0 indexes are always canonical",
+            ));
+        }
+
+        let seed = u64::from_le_bytes(seed_bytes);
+        let hasher_magic = u64::from_le_bytes(hasher_magic_bytes);
+        let recomputed = crate::hasher::DeterministicHasher::new(seed).magic();
+        if recomputed != hasher_magic {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Hasher mismatch: the index records hasher magic {:#x} for seed {} but this \
+                     build derives {:#x} — the index was built with a different rapidhash version \
+                     and must be rebuilt",
+                    hasher_magic, seed, recomputed
                 ),
             ));
         }
@@ -150,8 +197,10 @@ impl DictionarySerializationHeader {
             version_minor,
             k: u64::from_le_bytes(k_bytes) as usize,
             m: u64::from_le_bytes(m_bytes) as usize,
-            canonical: canonical_bytes[0] != 0,
+            canonical: true,
             num_mphf_partitions: u32::from_le_bytes(num_partitions_bytes),
+            seed,
+            hasher_magic,
         })
     }
 }
@@ -451,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_header_roundtrip() {
-        let header = DictionarySerializationHeader::new(31, 13, true, 2);
+        let header = DictionarySerializationHeader::new(31, 13, 1, 2);
 
         let mut buffer = Vec::new();
         header.write(&mut buffer).unwrap();

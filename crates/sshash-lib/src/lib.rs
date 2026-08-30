@@ -26,7 +26,10 @@ pub mod kmer_dict_trait;
 
 // Re-export common types at crate root 
 pub use kmer::{Kmer, Kmer21, Kmer31, Kmer63, KmerBits};
-pub use minimizer::{MinimizerInfo, MinimizerIterator};
+pub use minimizer::{
+    MinimizerInfo, MinimizerIterator, canonical_mmer_at, compute_minimizer, is_self_rc_mmer,
+    reverse_complement_mmer,
+};
 pub use minimizers_control_map::{MinimizersControlMap, MinimizersControlMapBuilder, BucketType};
 pub use streaming_query::{LookupResult, StreamingQuery};
 pub use dictionary::Dictionary;

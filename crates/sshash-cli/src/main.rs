@@ -8,7 +8,7 @@ use tracing::{info, debug, warn};
 
 #[derive(Parser)]
 #[command(name = "sshash")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "SSHash: Sparse and Skew Hashing of k-mers", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -35,7 +35,8 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
 
-        /// Use canonical k-mers (k-mer or reverse complement, whichever is smaller)
+        /// Deprecated: the index is always canonical (flag accepted for
+        /// compatibility, ignored with a warning)
         #[arg(long, default_value = "false")]
         canonical: bool,
 
@@ -66,8 +67,9 @@ enum Commands {
         #[arg(long, default_value = "false")]
         streaming: bool,
 
-        /// Strand-specific query: do not fall back to the reverse complement
-        /// (only meaningful for non-canonical indexes)
+        /// Restrict answers to k-mers occurring in forward orientation in the
+        /// indexed strings (an RC-orientation match reports not-found);
+        /// C++ v6 `check_reverse_complement = false`
         #[arg(long, default_value = "false")]
         forward_only: bool,
     },
@@ -129,6 +131,10 @@ enum Commands {
         /// Output file
         #[arg(short, long)]
         output: String,
+
+        /// Query via point lookups instead of the streaming engine
+        #[arg(long)]
+        point: bool,
     },
 }
 
@@ -162,8 +168,8 @@ fn main() -> anyhow::Result<()> {
         Commands::PointBench { index, query } => {
             point_bench_command(index, query)?;
         }
-        Commands::Dump { index, query, output } => {
-            dump_command(index, query, output)?;
+        Commands::Dump { index, query, output, point } => {
+            dump_command(index, query, output, point)?;
         }
     }
 
@@ -186,7 +192,6 @@ fn build_command(
     info!("  Input: {}", input);
     info!("  k: {}", k);
     info!("  m: {}", m);
-    info!("  Canonical: {}", canonical);
     info!("  RAM limit: {} GiB", ram_limit);
     
     // Read sequences - detect format by trying FASTA/FASTQ first, then plain text
@@ -196,7 +201,9 @@ fn build_command(
     // Create builder configuration
     let mut config = BuildConfiguration::new(k, m)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    config.canonical = canonical;
+    if canonical {
+        warn!("--canonical is deprecated: the index is always canonical");
+    }
     config.verbose = verbose;
     config.ram_limit_gib = ram_limit;
     config.num_threads = threads;
@@ -233,7 +240,7 @@ fn bench_command(index: String) -> anyhow::Result<()> {
     
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
-    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+    info!("Dictionary loaded (k={}, m={})", k, dict.m());
     
     dict.print_space_breakdown();
 
@@ -370,10 +377,9 @@ fn stream_bench_command(index: String, query: String) -> anyhow::Result<()> {
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
     info!(
-        "Dictionary loaded (k={}, m={}, canonical={})",
+        "Dictionary loaded (k={}, m={})",
         k,
         dict.m(),
-        dict.canonical()
     );
 
     info!("Loading query sequences from {}...", query);
@@ -468,10 +474,9 @@ fn point_bench_command(index: String, query: String) -> anyhow::Result<()> {
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
     info!(
-        "Dictionary loaded (k={}, m={}, canonical={})",
+        "Dictionary loaded (k={}, m={})",
         k,
         dict.m(),
-        dict.canonical()
     );
 
     info!("Loading query sequences from {}...", query);
@@ -556,15 +561,12 @@ fn query_command(index: String, query: String, streaming: bool, forward_only: bo
 
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
-    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+    info!("Dictionary loaded (k={}, m={})", k, dict.m());
 
     if forward_only && streaming {
         return Err(anyhow::anyhow!(
             "--forward-only is not supported with --streaming (the streaming query always checks the reverse complement, matching C++)"
         ));
-    }
-    if forward_only && dict.canonical() {
-        warn!("--forward-only has no effect on a canonical index (both strands are equivalent)");
     }
 
     sshash_lib::dispatch_on_k!(k, K => {
@@ -712,7 +714,7 @@ fn check_command(index: String, input: String, streaming: bool) -> anyhow::Resul
 
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
-    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+    info!("Dictionary loaded (k={}, m={})", k, dict.m());
     
     sshash_lib::dispatch_on_k!(k, K => {
         check_with_k::<K>(&dict, &input, streaming)
@@ -876,7 +878,7 @@ where
                 }
             }
 
-            if total % 100000 == 0 {
+            if total.is_multiple_of(100000) {
                 info!("  Checked {} k-mers...", total);
             }
         }
@@ -985,13 +987,13 @@ fn parse_kmer_file(path: &str) -> anyhow::Result<Vec<String>> {
 }
 
 /// Dump per-kmer results for both point and streaming queries
-fn dump_command(index: String, query: String, output: String) -> anyhow::Result<()> {
+fn dump_command(index: String, query: String, output: String, point: bool) -> anyhow::Result<()> {
     let index = normalize_index_path(&index);
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
 
     sshash_lib::dispatch_on_k!(k, K => {
-        dump_with_k::<K>(&dict, &query, &output)
+        dump_with_k::<K>(&dict, &query, &output, point)
     })
 }
 
@@ -999,6 +1001,7 @@ fn dump_with_k<const K: usize>(
     dict: &Dictionary,
     query: &str,
     output: &str,
+    point: bool,
 ) -> anyhow::Result<()>
 where
     Kmer<K>: KmerBits,
@@ -1011,7 +1014,10 @@ where
 
     let mut out = std::io::BufWriter::new(File::create(output)?);
 
-    writeln!(out, "seq_idx\tkmer_pos\tkmer_id\tstring_id\tkmer_id_in_string\tkmer_orientation")?;
+    writeln!(
+        out,
+        "seq_idx\tkmer_pos\tkmer_id\tkmer_id_in_string\tkmer_offset\tkmer_orientation\tstring_id\tstring_begin\tstring_end"
+    )?;
 
     for (seq_idx, seq) in sequences.iter().enumerate() {
         if seq.len() < k {
@@ -1019,18 +1025,28 @@ where
         }
         engine.reset();
         for i in 0..=(seq.len() - k) {
-            let kmer_bytes = seq[i..i + k].as_bytes();
-            let res = engine.lookup(kmer_bytes);
+            let kmer_bytes = &seq.as_bytes()[i..i + k];
+            let res = if point {
+                match Kmer::<K>::from_str(&seq[i..i + k]) {
+                    Ok(kmer) => dict.query::<K>(&kmer),
+                    Err(_) => sshash_lib::LookupResult::not_found(),
+                }
+            } else {
+                engine.lookup(kmer_bytes)
+            };
 
             writeln!(
                 out,
-                "{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 seq_idx,
                 i,
                 res.kmer_id,
-                res.string_id,
                 res.kmer_id_in_string,
+                res.kmer_offset,
                 res.kmer_orientation,
+                res.string_id,
+                res.string_begin,
+                res.string_end,
             )?;
         }
     }

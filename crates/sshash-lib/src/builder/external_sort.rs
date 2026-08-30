@@ -272,13 +272,22 @@ impl ExternalSorter {
         while merger.has_next() {
             let tuple = merger.current();
 
-            // Track statistics
+            // Track statistics; the scheme is forward, so no (minimizer,
+            // pos_in_seq) pair may occur twice among the sorted tuples —
+            // everything downstream sizes the index by the tuple count, so a
+            // violation must stop the build rather than corrupt it.
             if tuple.minimizer != prev_minimizer {
                 prev_minimizer = tuple.minimizer;
                 result.num_minimizers += 1;
                 result.num_positions += 1;
             } else if tuple.pos_in_seq != prev_pos_in_seq {
                 result.num_positions += 1;
+            } else {
+                let (bad_min, bad_pos) = (tuple.minimizer, tuple.pos_in_seq);
+                return Err(std::io::Error::other(format!(
+                    "the minimizer scheme is not forward: (minimizer {bad_min:#x}, \
+                     pos_in_seq {bad_pos}) occurs in more than one super-kmer"
+                )));
             }
             prev_pos_in_seq = tuple.pos_in_seq;
             result.num_super_kmers += 1;
@@ -324,6 +333,13 @@ impl ExternalSorter {
                 result.num_positions += 1;
             } else if tuple.pos_in_seq != prev_pos_in_seq {
                 result.num_positions += 1;
+            } else {
+                // See merge(): the forward scheme forbids duplicate pairs.
+                let (bad_min, bad_pos) = (tuple.minimizer, tuple.pos_in_seq);
+                return Err(std::io::Error::other(format!(
+                    "the minimizer scheme is not forward: (minimizer {bad_min:#x}, \
+                     pos_in_seq {bad_pos}) occurs in more than one super-kmer"
+                )));
             }
             prev_pos_in_seq = tuple.pos_in_seq;
             result.num_super_kmers += 1;
@@ -335,7 +351,7 @@ impl ExternalSorter {
     /// Read merged tuples into memory as internal MinimizerTuples
     ///
     /// Call this after `merge()` to get the final sorted tuples.
-    /// For large datasets, prefer [`open_merged_file`] to avoid full materialization.
+    /// For large datasets, prefer [`Self::open_merged_file`] to avoid full materialization.
     pub fn read_merged_tuples(&self) -> std::io::Result<Vec<MinimizerTuple>> {
         let path = self.merged_file_path();
         let file = File::open(&path)?;
@@ -522,7 +538,10 @@ impl Iterator for FileBucketIter {
         let mut num_kmers = first.num_kmers_in_super_kmer as u64;
         self.pos += 1;
 
-        // Read tuples until we hit a different minimizer
+        // Read tuples until we hit a different minimizer. The scheme is
+        // forward, so every tuple is one super-kmer; a duplicate pos_in_seq
+        // must abort — cached_size sizes the EF and offsets arrays, so a
+        // violation here would silently corrupt the index.
         while self.pos < self.num_tuples {
             match MinimizerTupleExternal::read_from(&mut self.reader) {
                 Ok(Some(t)) => {
@@ -531,10 +550,14 @@ impl Iterator for FileBucketIter {
                         self.lookahead = Some(t);
                         break;
                     }
-                    if t.pos_in_seq != prev_pos_in_seq {
-                        cached_size += 1;
-                        prev_pos_in_seq = t.pos_in_seq;
-                    }
+                    let t_pos = t.pos_in_seq;
+                    assert_ne!(
+                        t_pos, prev_pos_in_seq,
+                        "the minimizer scheme is not forward: (minimizer {minimizer:#x}, \
+                         pos_in_seq {prev_pos_in_seq}) occurs in more than one super-kmer"
+                    );
+                    cached_size += 1;
+                    prev_pos_in_seq = t_pos;
                     num_kmers += t.num_kmers_in_super_kmer as u64;
                     self.pos += 1;
                 }
@@ -671,11 +694,11 @@ impl FileMergingIterator {
         let mut min_tuple: Option<MinimizerTupleExternal> = None;
 
         for (i, tuple_opt) in self.current_tuples.iter().enumerate() {
-            if let Some(tuple) = tuple_opt {
-                if min_tuple.is_none() || *tuple < min_tuple.unwrap() {
-                    min_tuple = Some(*tuple);
-                    self.min_idx = i;
-                }
+            if let Some(tuple) = tuple_opt
+                && (min_tuple.is_none() || *tuple < min_tuple.unwrap())
+            {
+                min_tuple = Some(*tuple);
+                self.min_idx = i;
             }
         }
     }

@@ -76,6 +76,13 @@ impl DictionaryBuilder {
     /// # Returns
     /// A fully constructed Dictionary ready for queries
     pub fn build_from_sequences(&self, sequences: Vec<String>) -> Result<Dictionary, String> {
+        #[allow(deprecated)]
+        if !self.config.canonical {
+            tracing::warn!(
+                "non-canonical (regular) mode was removed in 0.7.0; \
+                 building the unified canonical index"
+            );
+        }
         // Build a rayon thread pool sized to config.num_threads.
         // num_threads == 0 means "all cores" (rayon default).
         let pool = rayon::ThreadPoolBuilder::new()
@@ -103,7 +110,9 @@ impl DictionaryBuilder {
         let k = self.config.k as u64;
         let total_kmers = total_bases.saturating_sub(num_strings * (k - 1));
 
-        if needs_external_sorting(total_kmers, self.config.ram_limit_gib) {
+        if self.config.force_external_sort
+            || needs_external_sorting(total_kmers, self.config.ram_limit_gib)
+        {
             info!("Using external sorting: estimated {} k-mers exceeds RAM limit of {} GiB",
                 total_kmers, self.config.ram_limit_gib);
             self.build_with_external_sort(spss)
@@ -216,7 +225,7 @@ impl DictionaryBuilder {
             index,
             self.config.k,
             self.config.m,
-            self.config.canonical,
+            self.config.seed,
         ))
     }
     
@@ -335,7 +344,6 @@ impl DictionaryBuilder {
                 mphf_order,
                 num_bits_per_offset,
                 spss,
-                self.config.canonical,
             ).map_err(|e| e.to_string())?
         });
 
@@ -410,7 +418,7 @@ impl DictionaryBuilder {
         let num_bits_per_offset = crate::constants::ceil_log2(total_bases);
 
         let index = crate::dispatch_on_k!(self.config.k, K => {
-            SparseAndSkewIndex::build_from_classified::<K>(classified, mphf_order, num_bits_per_offset, spss, self.config.canonical)
+            SparseAndSkewIndex::build_from_classified::<K>(classified, mphf_order, num_bits_per_offset, spss)
         });
 
         Ok(index)

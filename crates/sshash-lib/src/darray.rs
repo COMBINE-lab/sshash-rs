@@ -26,8 +26,7 @@ impl DArray {
         let mut subblock_inventory: Vec<u16> = Vec::new();
         let mut overflow_positions: Vec<u64> = Vec::new();
 
-        for word_idx in 0..bitvec.len() {
-            let raw = bitvec[word_idx];
+        for (word_idx, &raw) in bitvec.iter().enumerate() {
             let mut word = if negate { !raw } else { raw };
             let base = (word_idx as u64) << 6;
 
@@ -262,7 +261,7 @@ fn select_in_word(word: u64, k: u64) -> u64 {
         if std::is_x86_feature_detected!("bmi2") {
             return unsafe { select_in_word_pdep(word, k) };
         }
-        return select_in_word_broadword(word, k);
+        select_in_word_broadword(word, k)
     }
 
     // aarch64: use broadword selection (no PDEP equivalent in base NEON)

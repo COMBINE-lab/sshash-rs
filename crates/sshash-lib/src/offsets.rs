@@ -261,7 +261,7 @@ impl EliasFanoOffsets {
 
         // Pack low bits
         let total_low_bits = n as u64 * low_bit_width as u64;
-        let low_words = ((total_low_bits + 63) / 64) as usize;
+        let low_words = total_low_bits.div_ceil(64) as usize;
         let mut low_bits = vec![0u64; low_words];
         if low_bit_width > 0 {
             for (i, &v) in values.iter().enumerate() {

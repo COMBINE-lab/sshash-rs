@@ -46,6 +46,13 @@ impl DeterministicHasher {
     pub fn seed(&self) -> u64 {
         self.seed
     }
+
+    /// The seed-derived magic constant. Stored in the index header as a
+    /// guard: recomputing it at load time and comparing detects a rapidhash
+    /// behavior change (which would silently alter minimizer selection).
+    pub fn magic(&self) -> u64 {
+        self.magic
+    }
 }
 
 #[cfg(test)]

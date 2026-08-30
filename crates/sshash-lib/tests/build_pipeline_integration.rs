@@ -47,7 +47,7 @@ fn test_end_to_end_pipeline_simple() {
     assert_eq!(stats.num_buckets, buckets.len() as u64);
 
     // Step 6: Build sparse and skew index
-    let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
+    let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
 
     assert_eq!(index.num_buckets(), stats.num_buckets as usize);
 }
@@ -89,7 +89,7 @@ fn test_end_to_end_multiple_sequences() {
     assert!(stats.num_buckets > 0);
 
     // Build index
-    let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
+    let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
     assert_eq!(index.num_buckets(), stats.num_buckets as usize);
 }
 
@@ -130,9 +130,8 @@ fn test_bucket_type_distribution() {
 
 #[test]
 fn test_canonical_mode_pipeline() {
-    // Test with canonical mode enabled
-    let mut config = BuildConfiguration::new(31, 13).unwrap();
-    config.canonical = true;
+    // The index is always canonical (unified scheme)
+    let config = BuildConfiguration::new(31, 13).unwrap();
 
     let mut encoder = Encoder::<31>::new();
     let sequence = b"ACGTACGTACGTACGTACGTACGTACGTACG";
@@ -151,7 +150,7 @@ fn test_canonical_mode_pipeline() {
 
     // Build index in canonical mode
     let buckets = classify_into_buckets(tuples);
-    let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss, false);
+    let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
 
     assert!(index.num_buckets() > 0);
 }

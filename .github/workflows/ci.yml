@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Debug tests carry the heavy invariants: the incremental minimizer is
+      # checked against the batch reference on every call, and every streaming
+      # result against its point lookup.
+      - name: cargo test (debug, all invariant asserts active)
+        run: cargo test --workspace
+      - name: cargo test (release)
+        run: cargo test --workspace --release
+      - name: heavy minimizer property grid
+        run: cargo test --release -p sshash-lib --test minimizer_properties -- --ignored
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

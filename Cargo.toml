@@ -4,9 +4,9 @@ members = ["crates/sshash-lib", "crates/sshash-cli", "crates/sshash-py", "crates
 default-members = ["crates/sshash-lib", "crates/sshash-cli"]
 
 [workspace.package]
-version = "0.6.4"
+version = "0.7.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["SSHash Contributors"]
 license-file = "LICENSE"
 repository = "https://github.com/COMBINE-lab/sshash-rs"
@@ -15,8 +15,8 @@ categories = ["command-line-utilities", "data-structures"]
 
 [workspace.dependencies]
 # Core library
-sshash-lib = { version = "0.6.4", path = "crates/sshash-lib" }
-tiny-dict = { version = "0.6.4", path = "crates/tiny-dict" }
+sshash-lib = { version = "0.7.0", path = "crates/sshash-lib" }
+tiny-dict = { version = "0.7.0", path = "crates/tiny-dict" }
 
 # Succinct data structures
 sux = { version = "0.14.0", features = ["epserde"] }
