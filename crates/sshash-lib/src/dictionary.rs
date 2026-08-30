@@ -310,26 +310,44 @@ impl Dictionary {
                 None => crate::streaming_query::LookupResult::not_found(),
             }
         } else {
-            // Singleton or light bucket: decode the locate set, then verify.
-            let mut buf = [0u64; 1 << MIN_L];
-            for (i, slot) in buf[..n].iter_mut().enumerate() {
-                *slot = self.index.offsets.index_value(begin + i) as u64;
-            }
-            // The bucket's positions all anchor the same minimizer, so one
-            // presence probe decides for the whole set: a mismatch means an
-            // out-of-set minimizer collided into this bucket through the MPHF.
-            if !self.mmer_matches(buf[0], mini.value) {
+            // Singleton or light bucket. The bucket's positions all anchor the
+            // same minimizer, so one presence probe decides for the whole set:
+            // a mismatch means an out-of-set minimizer collided into this
+            // bucket through the MPHF.
+            let first_pos = self.index.offsets.index_value(begin) as u64;
+            if !self.mmer_matches(first_pos, mini.value) {
+                if let Some(c) = cache {
+                    c.size = 0;
+                }
                 let mut res = crate::streaming_query::LookupResult::not_found();
                 res.minimizer_found = false;
                 return res;
             }
             if let Some(c) = cache {
                 if n <= BucketCache::MAX_CACHED_POSITIONS {
-                    c.positions[..n].copy_from_slice(&buf[..n]);
+                    // Decode into the cache (no extra cost — the verification
+                    // consumes the same values) so a streaming follow-up with
+                    // this minimizer skips the MPHF/EF/offset work entirely.
+                    c.positions[0] = first_pos;
+                    for i in 1..n {
+                        c.positions[i] = self.index.offsets.index_value(begin + i) as u64;
+                    }
                     c.size = n;
+                    let positions = c.positions;
+                    return self.lookup_at_positions(&positions[..n], kmer, kmer_rc, mini);
                 }
             }
-            self.lookup_at_positions(&buf[..n], kmer, kmer_rc, mini)
+            // No caching: verify straight off the offsets array, no buffering.
+            if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, first_pos, mini.pos_in_kmer) {
+                return hit.into_lookup_result(self.k);
+            }
+            for i in (begin + 1)..end {
+                let minimizer_pos = self.index.offsets.index_value(i) as u64;
+                if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, minimizer_pos, mini.pos_in_kmer) {
+                    return hit.into_lookup_result(self.k);
+                }
+            }
+            crate::streaming_query::LookupResult::not_found()
         }
     }
 

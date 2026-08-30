@@ -183,30 +183,62 @@ where
     Kmer<K>: KmerBits,
 {
     debug_assert!(m >= 1 && m <= K && 2 * m < 64);
+    let mask = (1u64 << (2 * m)) - 1;
 
-    // The first locus is peeled off the loop so that `min_hash` starts out at
-    // a real hash value: initializing it to u64::MAX would make an actual
-    // hash of u64::MAX register as a tie rather than as the minimum.
-    let mut min_value = canonical_mmer_at(kmer, kmer_rc, m, 0);
-    let mut min_hash = hasher.hash(min_value);
-    let mut leftmost = 0usize;
-    let mut rightmost = 0usize;
-    let mut tie = false;
+    // Hot loop, structured like C++'s: the forward m-mer comes from a running
+    // window shifted by a constant 2 per locus; only the RC extraction pays a
+    // variable shift (`rc(x_i) = rc(x)_{K-m-i}`). The first locus is peeled
+    // off so that `min_hash` starts out at a real hash value: initializing it
+    // to u64::MAX would make an actual hash of u64::MAX register as a tie
+    // rather than as the minimum.
+    macro_rules! scan {
+        ($bits:expr, $rc_bits:expr) => {{
+            let bits = $bits;
+            let rc_bits = $rc_bits;
+            let mut window = bits;
+            let kappa = |window, i: usize| {
+                let fwd = (window as u64) & mask;
+                let rc = (((rc_bits) >> (2 * (K - m - i))) as u64) & mask;
+                debug_assert_eq!(rc, reverse_complement_mmer(fwd, m));
+                fwd.min(rc)
+            };
 
-    for i in 1..=(K - m) {
-        let value = canonical_mmer_at(kmer, kmer_rc, m, i);
-        let hash = hasher.hash(value);
-        if hash < min_hash {
-            min_hash = hash;
-            min_value = value;
-            leftmost = i;
-            rightmost = i;
-            tie = false;
-        } else if hash == min_hash {
-            rightmost = i;
-            tie = true;
-        }
+            let mut min_value = kappa(window, 0);
+            let mut min_hash = hasher.hash(min_value);
+            let mut leftmost = 0usize;
+            let mut rightmost = 0usize;
+            let mut tie = false;
+
+            for i in 1..=(K - m) {
+                window >>= 2;
+                let value = kappa(window, i);
+                let hash = hasher.hash(value);
+                if hash < min_hash {
+                    min_hash = hash;
+                    min_value = value;
+                    leftmost = i;
+                    rightmost = i;
+                    tie = false;
+                } else if hash == min_hash {
+                    rightmost = i;
+                    tie = true;
+                }
+            }
+            (min_value, min_hash, leftmost, rightmost, tie)
+        }};
     }
+
+    let (min_value, min_hash, leftmost, rightmost, tie) = if K <= 31 {
+        scan!(
+            <Kmer<K> as KmerBits>::to_u64(kmer.bits()),
+            <Kmer<K> as KmerBits>::to_u64(kmer_rc.bits())
+        )
+    } else {
+        scan!(
+            <Kmer<K> as KmerBits>::to_u128(kmer.bits()),
+            <Kmer<K> as KmerBits>::to_u128(kmer_rc.bits())
+        )
+    };
 
     let chosen = if tie {
         resolve_tie(kmer, kmer_rc, m, hasher, min_hash, min_value, leftmost, rightmost)
