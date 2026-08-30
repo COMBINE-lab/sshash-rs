@@ -111,13 +111,12 @@ impl SparseAndSkewIndex {
         for orig_idx in 0..num_buckets {
             let bucket = &buckets[orig_idx];
             let size = bucket.size();
-            let mut idx = offset_start_by_orig[orig_idx] as usize;
+            let idx0 = offset_start_by_orig[orig_idx] as usize;
             // Forward scheme: one tuple per minimizer position (enforced at
             // classification/merge time), so every tuple is one write.
             debug_assert!(bucket.tuples.windows(2).all(|p| p[0].pos_in_seq != p[1].pos_in_seq));
-            for tuple in &bucket.tuples {
-                offsets.set_value(idx, tuple.pos_in_seq as usize);
-                idx += 1;
+            for (off, tuple) in bucket.tuples.iter().enumerate() {
+                offsets.set_value(idx0 + off, tuple.pos_in_seq as usize);
             }
             if size > MIN_BUCKET_SIZE { heavy_buckets_for_skew.push((orig_idx, size)); }
         }
@@ -181,12 +180,11 @@ impl SparseAndSkewIndex {
         for orig_idx in 0..num_buckets {
             let bref = &classified.bucket_refs[orig_idx];
             let size = bref.cached_size;
-            let mut idx = offset_start_by_orig[orig_idx] as usize;
+            let idx0 = offset_start_by_orig[orig_idx] as usize;
             // Forward scheme: one tuple per minimizer position (enforced at
             // classification/merge time), so every tuple is one write.
-            for tuple in classified.bucket_tuples(orig_idx) {
-                offsets.set_value(idx, tuple.pos_in_seq as usize);
-                idx += 1;
+            for (off, tuple) in classified.bucket_tuples(orig_idx).iter().enumerate() {
+                offsets.set_value(idx0 + off, tuple.pos_in_seq as usize);
             }
 
             if size > MIN_BUCKET_SIZE {

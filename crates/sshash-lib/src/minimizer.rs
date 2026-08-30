@@ -125,6 +125,7 @@ impl MinimizerInfo {
 /// (observed in C++, commit b1d0706).
 #[cold]
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn resolve_tie<const K: usize>(
     kmer: &Kmer<K>,
     kmer_rc: &Kmer<K>,
