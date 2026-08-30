@@ -274,8 +274,8 @@ pub fn needs_external_sorting(total_kmers: u64, ram_limit_gib: usize) -> bool {
 ///
 /// # Returns
 /// Sorted vector of MinimizerTuples (loaded from merged temp file).
-/// For large datasets, prefer [`compute_minimizer_tuples_external_mmap`] which
-/// returns an mmap'd view instead of materializing all tuples.
+/// For large datasets, prefer [`compute_minimizer_tuples_external_file`],
+/// which returns a file handle instead of materializing all tuples.
 pub fn compute_minimizer_tuples_external<const K: usize>(
     spss: &SpectrumPreservingStringSet,
     config: &BuildConfiguration,
@@ -289,7 +289,8 @@ where
 
 /// Compute minimizer tuples using external sorting, returning a file handle.
 ///
-/// Like [`compute_minimizer_tuples_external`], but returns a [`FileTuples`]
+/// Like [`compute_minimizer_tuples_external`], but returns a
+/// [`FileTuples`](super::external_sort::FileTuples)
 /// instead of materializing all tuples in memory. This is the production path
 /// for large datasets — tuples are accessed sequentially via buffered I/O.
 pub fn compute_minimizer_tuples_external_file<const K: usize>(

@@ -34,7 +34,7 @@ use value_traits::slices::{SliceByValue, SliceByValueMut};
 /// 2. Using locate_bucket(bucket_id) to find the range [begin, end) in offsets
 /// 3. Size-based routing: linear scan for small buckets, MPHF for heavy buckets
 pub struct SparseAndSkewIndex {
-    /// Monotone Elias-Fano sequence: extras[i] = cumulative (bucket_size - 1)
+    /// Monotone Elias-Fano sequence: `extras[i]` = cumulative (bucket_size - 1)
     /// for buckets 0..i. Used to locate bucket boundaries:
     ///   begin = ef.access(id) + id
     ///   end   = ef.access(id+1) + id + 1
@@ -72,7 +72,7 @@ impl SparseAndSkewIndex {
 
     /// Build the sparse and skew index from owned `Bucket` objects (legacy API).
     ///
-    /// Prefer [`build_from_classified`] for production use — it avoids
+    /// Prefer [`Self::build_from_classified`] for production use — it avoids
     /// duplicating the tuple payload.
     pub fn build<const K: usize>(
         buckets: &[Bucket],
@@ -528,7 +528,7 @@ impl SkewIndex {
 
     /// Build the skew index from heavy buckets (legacy API for tests).
     ///
-    /// See [`build_from_classified`] for the production path.
+    /// See [`Self::build_from_classified`] for the production path.
     pub fn build<const K: usize>(
         heavy_buckets: &[(usize, &Bucket)],
         max_bucket_size: usize,

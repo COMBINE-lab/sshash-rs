@@ -351,7 +351,7 @@ impl ExternalSorter {
     /// Read merged tuples into memory as internal MinimizerTuples
     ///
     /// Call this after `merge()` to get the final sorted tuples.
-    /// For large datasets, prefer [`open_merged_file`] to avoid full materialization.
+    /// For large datasets, prefer [`Self::open_merged_file`] to avoid full materialization.
     pub fn read_merged_tuples(&self) -> std::io::Result<Vec<MinimizerTuple>> {
         let path = self.merged_file_path();
         let file = File::open(&path)?;

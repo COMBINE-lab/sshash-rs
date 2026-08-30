@@ -6,7 +6,7 @@ default-members = ["crates/sshash-lib", "crates/sshash-cli"]
 [workspace.package]
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["SSHash Contributors"]
 license-file = "LICENSE"
 repository = "https://github.com/COMBINE-lab/sshash-rs"
