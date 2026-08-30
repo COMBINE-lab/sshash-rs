@@ -9,8 +9,13 @@ die() {
 usage() {
     cat <<'EOF'
 Usage:
-  ./bump_and_publish.sh <version> [--publish] [--dry-run]
+  ./bump_and_publish.sh <version> [--publish] [--dry-run] [--allow-same-version]
   ./bump_and_publish.sh [--publish] [--dry-run] <version>
+
+  --allow-same-version: proceed when the workspace is already at <version>
+  (the bump edits and bump commit are skipped; check/publish/tag still run).
+  Use when the version was bumped ahead of time, e.g. so downstream
+  [patch.crates-io] path overrides resolve during development.
 
 Options:
   --publish  Publish sshash-lib, then tiny-dict, then sshash, after bumping and committing
@@ -34,6 +39,7 @@ run() {
 }
 
 VERSION=""
+ALLOW_SAME_VERSION=false
 PUBLISH=false
 DRY_RUN=false
 
@@ -44,6 +50,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=true
+            ;;
+        --allow-same-version)
+            ALLOW_SAME_VERSION=true
             ;;
         -h|--help)
             usage
@@ -92,8 +101,14 @@ CURRENT_TINY_DEP_VERSION="$(sed -n 's/^tiny-dict = { version = "\(.*\)", path = 
 [[ -n "$CURRENT_LIB_DEP_VERSION" ]] || die "could not determine sshash-lib workspace dependency version from $ROOT_CARGO"
 [[ -n "$CURRENT_TINY_DEP_VERSION" ]] || die "could not determine tiny-dict workspace dependency version from $ROOT_CARGO"
 
+SAME_VERSION=false
 if [[ "$CURRENT_VERSION" == "$VERSION" ]]; then
-    die "workspace version is already $VERSION"
+    if [[ "$ALLOW_SAME_VERSION" == true ]]; then
+        SAME_VERSION=true
+        echo "Workspace already at $VERSION; skipping bump edits (--allow-same-version)"
+    else
+        die "workspace version is already $VERSION (pass --allow-same-version to release it as-is)"
+    fi
 fi
 
 if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -126,7 +141,7 @@ echo "  [workspace.package] version: $CURRENT_VERSION -> $VERSION"
 echo "  [workspace.dependencies].sshash-lib version: $CURRENT_LIB_DEP_VERSION -> $VERSION"
 echo "  [workspace.dependencies].tiny-dict  version: $CURRENT_TINY_DEP_VERSION -> $VERSION"
 
-if [[ "$DRY_RUN" == false ]]; then
+if [[ "$DRY_RUN" == false && "$SAME_VERSION" == false ]]; then
     sed -i.bak "1,/^version = /s/^version = \".*\"/version = \"${VERSION}\"/" "$ROOT_CARGO"
     rm -f "${ROOT_CARGO}.bak"
 
@@ -150,8 +165,12 @@ else
 fi
 
 run cargo check -p "$LIB_CRATE" -p "$TINY_CRATE" -p "$CLI_CRATE" -q
-run git add "$ROOT_CARGO" "$LOCKFILE"
-run git commit -m "chore(release): bump Rust crates to v${VERSION}"
+if [[ "$SAME_VERSION" == false ]]; then
+    run git add "$ROOT_CARGO" "$LOCKFILE"
+    run git commit -m "chore(release): bump Rust crates to v${VERSION}"
+else
+    echo "Skipping bump commit (workspace already at v${VERSION})"
+fi
 
 wait_for_crate() {
     local crate_name="$1"

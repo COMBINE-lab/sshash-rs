@@ -50,8 +50,8 @@ sshash build --input sequences.fa.gz --k 31 --m 20 --output index
 # From SPSS format (one unitig per line)
 sshash build --input unitigs.spss --k 31 --m 20 --output index
 
-# Canonical mode (reverse-complement normalization)
-sshash build --input sequences.fa --k 31 --m 20 --output index --canonical
+# The index is always canonical (a k-mer and its reverse complement share
+# one entry, and lookups report orientation); there is no modality flag.
 ```
 
 ### Query k-mers
@@ -138,7 +138,7 @@ crates/
 
 Verified against the C++ reference implementation on:
 
-- *Salmonella enterica* (4.8M k-mers): **100%** correctness (regular and canonical)
+- *Salmonella enterica* (4.8M k-mers): **100%** correctness
 - Human chromosome 1 (204M k-mers): **100%** correctness
 
 ## License

@@ -8,7 +8,7 @@ use tracing::{info, debug, warn};
 
 #[derive(Parser)]
 #[command(name = "sshash")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "SSHash: Sparse and Skew Hashing of k-mers", long_about = None)]
 struct Cli {
     #[command(subcommand)]
