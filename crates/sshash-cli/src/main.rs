@@ -130,6 +130,10 @@ enum Commands {
         /// Output file
         #[arg(short, long)]
         output: String,
+
+        /// Query via point lookups instead of the streaming engine
+        #[arg(long)]
+        point: bool,
     },
 }
 
@@ -163,8 +167,8 @@ fn main() -> anyhow::Result<()> {
         Commands::PointBench { index, query } => {
             point_bench_command(index, query)?;
         }
-        Commands::Dump { index, query, output } => {
-            dump_command(index, query, output)?;
+        Commands::Dump { index, query, output, point } => {
+            dump_command(index, query, output, point)?;
         }
     }
 
@@ -985,13 +989,13 @@ fn parse_kmer_file(path: &str) -> anyhow::Result<Vec<String>> {
 }
 
 /// Dump per-kmer results for both point and streaming queries
-fn dump_command(index: String, query: String, output: String) -> anyhow::Result<()> {
+fn dump_command(index: String, query: String, output: String, point: bool) -> anyhow::Result<()> {
     let index = normalize_index_path(&index);
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
 
     sshash_lib::dispatch_on_k!(k, K => {
-        dump_with_k::<K>(&dict, &query, &output)
+        dump_with_k::<K>(&dict, &query, &output, point)
     })
 }
 
@@ -999,6 +1003,7 @@ fn dump_with_k<const K: usize>(
     dict: &Dictionary,
     query: &str,
     output: &str,
+    point: bool,
 ) -> anyhow::Result<()>
 where
     Kmer<K>: KmerBits,
@@ -1011,7 +1016,10 @@ where
 
     let mut out = std::io::BufWriter::new(File::create(output)?);
 
-    writeln!(out, "seq_idx\tkmer_pos\tkmer_id\tstring_id\tkmer_id_in_string\tkmer_orientation")?;
+    writeln!(
+        out,
+        "seq_idx\tkmer_pos\tkmer_id\tkmer_id_in_string\tkmer_offset\tkmer_orientation\tstring_id\tstring_begin\tstring_end"
+    )?;
 
     for (seq_idx, seq) in sequences.iter().enumerate() {
         if seq.len() < k {
@@ -1020,17 +1028,27 @@ where
         engine.reset();
         for i in 0..=(seq.len() - k) {
             let kmer_bytes = seq[i..i + k].as_bytes();
-            let res = engine.lookup(kmer_bytes);
+            let res = if point {
+                match Kmer::<K>::from_str(&seq[i..i + k]) {
+                    Ok(kmer) => dict.query::<K>(&kmer),
+                    Err(_) => sshash_lib::LookupResult::not_found(),
+                }
+            } else {
+                engine.lookup(kmer_bytes)
+            };
 
             writeln!(
                 out,
-                "{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 seq_idx,
                 i,
                 res.kmer_id,
-                res.string_id,
                 res.kmer_id_in_string,
+                res.kmer_offset,
                 res.kmer_orientation,
+                res.string_id,
+                res.string_begin,
+                res.string_end,
             )?;
         }
     }
