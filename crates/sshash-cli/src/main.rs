@@ -67,8 +67,8 @@ enum Commands {
         #[arg(long, default_value = "false")]
         streaming: bool,
 
-        /// Strand-specific query: do not fall back to the reverse complement
-        /// (only meaningful for non-canonical indexes)
+        /// Deprecated, no effect: the index is always canonical, so both
+        /// strands are equivalent (accepted for one release, warns when set)
         #[arg(long, default_value = "false")]
         forward_only: bool,
     },

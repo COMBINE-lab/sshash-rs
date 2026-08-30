@@ -10,7 +10,18 @@ use pyo3::prelude::*;
 use sshash_lib::builder::{parse_cf_seg, BuildConfiguration, DictionaryBuilder};
 use sshash_lib::builder::parse::parse_sequences;
 use sshash_lib::{dispatch_on_k, Dictionary, Kmer, KmerBits, LookupResult, StreamingQuery};
+use std::ffi::CStr;
 use std::sync::Arc;
+
+/// Emit a Python DeprecationWarning (visible with `-W default` / pytest).
+fn warn_deprecated(py: Python<'_>, message: &'static CStr) -> PyResult<()> {
+    PyErr::warn(
+        py,
+        &py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        message,
+        1,
+    )
+}
 
 // ─── Hit ─────────────────────────────────────────────────────────────────────
 
@@ -248,39 +259,47 @@ impl PyDictionary {
     #[getter]
     fn num_bits(&self) -> u64 { self.inner.num_bits() }
 
-    /// Return the global k-mer ID, or ``None`` if the k-mer is not in the index.
+    /// Return the k-mer's absolute base offset in the concatenated string set
+    /// (``kmer_offset``), or ``None`` if the k-mer is not in the index. For the
+    /// global k-mer ID and full location information use :meth:`query`.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: If ``True``, perform a strand-specific lookup that does
-    ///     not fall back to the reverse complement (only meaningful for
-    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
+    /// :param forward_only: Deprecated, no effect: the index is always canonical
+    ///     (both strands are equivalent). Accepted for one release; warns if ``True``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
-    fn lookup(&self, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
+    fn lookup(&self, py: Python<'_>, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
+        if forward_only {
+            warn_deprecated(py, c"forward_only has no effect: the index is always canonical")?;
+        }
         self.inner.lookup_str(kmer, forward_only)
     }
 
     /// Return a :class:`Hit` with full location information, or ``None`` if not found.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: If ``True``, perform a strand-specific query that does
-    ///     not fall back to the reverse complement (only meaningful for
-    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
+    /// :param forward_only: Deprecated, no effect: the index is always canonical
+    ///     (both strands are equivalent). Accepted for one release; warns if ``True``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
-    fn query(&self, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
+    fn query(&self, py: Python<'_>, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
+        if forward_only {
+            warn_deprecated(py, c"forward_only has no effect: the index is always canonical")?;
+        }
         self.inner.query_str(kmer, forward_only)
     }
 
     /// Return ``True`` if the k-mer is present in the index.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: If ``True``, perform a strand-specific membership test
-    ///     that does not fall back to the reverse complement (only meaningful for
-    ///     non-canonical indexes; ignored for canonical ones). Defaults to ``False``.
+    /// :param forward_only: Deprecated, no effect: the index is always canonical
+    ///     (both strands are equivalent). Accepted for one release; warns if ``True``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
-    fn contains(&self, kmer: &str, forward_only: bool) -> PyResult<bool> {
+    fn contains(&self, py: Python<'_>, kmer: &str, forward_only: bool) -> PyResult<bool> {
+        if forward_only {
+            warn_deprecated(py, c"forward_only has no effect: the index is always canonical")?;
+        }
         self.inner.contains_str(kmer, forward_only)
     }
 
@@ -423,7 +442,6 @@ impl SequenceIterator {
 /// Example::
 ///
 ///     config = sshash.BuildConfig(k=31, m=19)
-///     config.canonical = True
 ///     config.threads = 8
 ///     dict = config.build(["ACGTACGT...", "TTGCAACCG..."])
 #[pyclass(name = "BuildConfig")]
@@ -459,7 +477,9 @@ impl PyBuildConfig {
     fn canonical(&self) -> bool { true }
 
     #[setter(canonical)]
-    fn set_canonical(&mut self, _val: bool) {}
+    fn set_canonical(&mut self, py: Python<'_>, _val: bool) -> PyResult<()> {
+        warn_deprecated(py, c"BuildConfig.canonical is deprecated and ignored: the index is always canonical")
+    }
 
     /// Number of threads (0 = all available cores).
     #[getter]
