@@ -92,7 +92,7 @@ where
     Kmer<K>: KmerBits,
 {
     fn new(dict: Arc<Dictionary>) -> Self {
-        let query = StreamingQuery::new(dict.k(), dict.m(), dict.canonical());
+        let query = StreamingQuery::with_seed(dict.k(), dict.m(), dict.seed());
         ConcreteEngine { query, dict }
     }
 }
@@ -178,7 +178,7 @@ where
 
     fn k(&self) -> usize { self.inner.k() }
     fn m(&self) -> usize { self.inner.m() }
-    fn canonical(&self) -> bool { self.inner.canonical() }
+    fn canonical(&self) -> bool { true } // always canonical since 0.7.0
     fn num_strings(&self) -> u64 { self.inner.num_strings() }
     fn num_bits(&self) -> u64 { self.inner.num_bits() }
 
@@ -238,7 +238,7 @@ impl PyDictionary {
 
     /// Whether this index was built in canonical mode.
     #[getter]
-    fn canonical(&self) -> bool { self.inner.canonical() }
+    fn canonical(&self) -> bool { true } // always canonical since 0.7.0
 
     /// Number of strings (unitigs) in the index.
     #[getter]
@@ -453,12 +453,13 @@ impl PyBuildConfig {
     #[getter]
     fn m(&self) -> usize { self.config.m }
 
-    /// Whether to build in canonical mode (k-mer and its reverse complement map to the same entry).
+    /// Deprecated: the index is always canonical since 0.7.0 (getter kept
+    /// for compatibility; the setter is ignored).
     #[getter]
-    fn canonical(&self) -> bool { self.config.canonical }
+    fn canonical(&self) -> bool { true }
 
     #[setter(canonical)]
-    fn set_canonical(&mut self, val: bool) { self.config.canonical = val; }
+    fn set_canonical(&mut self, _val: bool) {}
 
     /// Number of threads (0 = all available cores).
     #[getter]
@@ -567,10 +568,9 @@ impl PyBuildConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "BuildConfig(k={}, m={}, canonical={}, threads={}, ram_limit_gib={})",
+            "BuildConfig(k={}, m={}, threads={}, ram_limit_gib={})",
             self.config.k,
             self.config.m,
-            self.config.canonical,
             self.config.num_threads,
             self.config.ram_limit_gib,
         )

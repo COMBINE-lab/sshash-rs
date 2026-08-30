@@ -385,10 +385,6 @@ impl TinyDictionary {
         Kmer<K>: KmerBits,
     {
         assert!(K <= 31, "TinyDictionary currently supports K ≤ 31 only");
-        assert!(
-            dict.canonical(),
-            "TinyDictionary currently supports canonical-mode indexes only"
-        );
         assert_eq!(dict.k(), K, "dict.k() must match const generic K");
 
         let spss = TinySpss::from_sshash(dict.spss());
@@ -437,7 +433,8 @@ impl TinyDictionary {
             spss,
             k: K,
             m: dict.m(),
-            canonical: dict.canonical(),
+            // sshash indexes are always canonical since 0.7.0
+            canonical: true,
             index,
             bloom,
             gate,

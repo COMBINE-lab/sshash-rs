@@ -208,6 +208,27 @@ impl SpectrumPreservingStringSet {
         }
     }
 
+    /// Decode the m-mer (m <= 31) at an absolute base position.
+    ///
+    /// Used by the lookup path to verify that a bucket's first offset really
+    /// holds the queried minimizer (see `Dictionary::lookup_with_minimizer`).
+    /// Same branchless unaligned read as the K<=31 arm of
+    /// [`Self::decode_kmer_at`]; the 8-byte tail padding makes it safe.
+    #[inline(always)]
+    pub fn decode_mmer_at(&self, absolute_pos: usize, m: usize) -> u64 {
+        debug_assert!(m >= 1 && 2 * m < 64);
+        let byte_offset = absolute_pos / 4;
+        let bit_shift = (absolute_pos % 4) * 2;
+        let (raw, extra) = unsafe {
+            let base = self.strings.as_ptr().add(byte_offset);
+            // SAFETY: as in decode_kmer_at — `strings` carries 8 bytes of
+            // tail padding and a decodable m-mer starts before the logical end.
+            (std::ptr::read_unaligned(base as *const u64), *base.add(8) as u64)
+        };
+        let result = (raw >> bit_shift) | ((extra << 1) << (63 - bit_shift));
+        result & ((1u64 << (2 * m)) - 1)
+    }
+
     /// Decode a k-mer at an absolute base position in the concatenated strings.
     #[inline(always)]
     pub fn decode_kmer_at<const K: usize>(&self, absolute_pos: usize) -> Kmer<K>

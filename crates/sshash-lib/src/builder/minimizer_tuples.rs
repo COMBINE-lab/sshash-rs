@@ -205,42 +205,20 @@ where
         // Decode k-mer from SPSS
         let kmer = spss.decode_kmer::<K>(string_id, kmer_pos);
 
-        // Compute forward minimizer using PERSISTENT iterator state
-        let forward_minimizer = minimizer_iter.next(kmer);
-
-        let (final_minimizer, final_pos_in_kmer) = if config.canonical {
-            // Compute RC minimizer using a FRESH iterator (not sequential).
-            // RC k-mers slide in the opposite direction (new base at front,
-            // not at end), so the sequential sliding optimization gives wrong
-            // results. A fresh iterator always does a full rescan, matching
-            // the query-time behavior exactly.
-            let kmer_rc = kmer.reverse_complement();
-            let mut fresh_rc_iter = MinimizerIterator::with_seed(k, m, config.seed);
-            let rc_minimizer = fresh_rc_iter.next(kmer_rc);
-
-            // Choose smaller minimizer (compare by value, which is deterministic)
-            if rc_minimizer.value < forward_minimizer.value {
-                // RC minimizer wins - adjust position to forward k-mer frame
-                let adjusted_pos = (k - m) as u8 - rc_minimizer.pos_in_kmer as u8;
-                (rc_minimizer.value, adjusted_pos)
-            } else {
-                (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-            }
-        } else {
-            // Non-canonical mode: just use forward minimizer
-            (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-        };
-
-        // Store absolute position of minimizer in concatenated SPSS
-        // (matching C++ decoded_offsets approach)
-        // absolute_pos = string_begin + kmer_pos + pos_in_kmer
-        // During lookup, we recover: kmer_start = absolute_pos - pos_in_kmer
-        let absolute_pos_in_seq = string_begin + kmer_pos as u64 + final_pos_in_kmer as u64;
+        // The unified canonical scheme: one iterator, one order, both strands.
+        // `position` is the absolute (tie-broken) minimizer position in the
+        // concatenated SPSS; lookup recovers kmer_start = pos_in_seq - pos_in_kmer.
+        let kmer_rc = kmer.reverse_complement();
+        let mini = minimizer_iter.next(&kmer, &kmer_rc);
+        debug_assert_eq!(
+            mini.position,
+            string_begin + kmer_pos as u64 + mini.pos_in_kmer as u64
+        );
 
         let current_mini = MinimizerTuple {
-            minimizer: final_minimizer,
-            pos_in_seq: absolute_pos_in_seq,
-            pos_in_kmer: final_pos_in_kmer,
+            minimizer: mini.value,
+            pos_in_seq: mini.position,
+            pos_in_kmer: mini.pos_in_kmer as u8,
             num_kmers_in_super_kmer: 1, // Will be updated during coalescing
         };
 
@@ -462,29 +440,18 @@ where
 
         for kmer_pos in 0..num_kmers {
             let kmer = spss.decode_kmer::<K>(string_id as u64, kmer_pos);
-            let forward_minimizer = minimizer_iter.next(kmer);
-
-            let (final_minimizer, final_pos_in_kmer) = if config.canonical {
-                let kmer_rc = kmer.reverse_complement();
-                let mut fresh_rc_iter = MinimizerIterator::with_seed(k, m, config.seed);
-                let rc_minimizer = fresh_rc_iter.next(kmer_rc);
-
-                if rc_minimizer.value < forward_minimizer.value {
-                    let adjusted_pos = (k - m) as u8 - rc_minimizer.pos_in_kmer as u8;
-                    (rc_minimizer.value, adjusted_pos)
-                } else {
-                    (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-                }
-            } else {
-                (forward_minimizer.value, forward_minimizer.pos_in_kmer as u8)
-            };
-
-            let absolute_pos_in_seq = string_begin + kmer_pos as u64 + final_pos_in_kmer as u64;
+            // The unified canonical scheme (see extract_tuples_for_string).
+            let kmer_rc = kmer.reverse_complement();
+            let mini = minimizer_iter.next(&kmer, &kmer_rc);
+            debug_assert_eq!(
+                mini.position,
+                string_begin + kmer_pos as u64 + mini.pos_in_kmer as u64
+            );
 
             let current = MinimizerTupleExternal {
-                minimizer: final_minimizer,
-                pos_in_seq: absolute_pos_in_seq,
-                pos_in_kmer: final_pos_in_kmer,
+                minimizer: mini.value,
+                pos_in_seq: mini.position,
+                pos_in_kmer: mini.pos_in_kmer as u8,
                 num_kmers_in_super_kmer: 1,
             };
 

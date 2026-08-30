@@ -36,8 +36,9 @@ pub struct Dictionary {
     /// Minimizer size
     m: usize,
 
-    /// Whether to use canonical mode (k-mer or RC, whichever is smaller)
-    canonical: bool,
+    /// Build seed: the minimizer hasher is derived from it, so it is part of
+    /// the index identity (stored in the serialized header).
+    seed: u64,
 
     /// Cached hasher for minimizer extraction (avoids re-creating RandomState per query)
     hasher: crate::hasher::DeterministicHasher,
@@ -73,14 +74,18 @@ impl LocatedHit {
 }
 
 impl Dictionary {
-    /// Create a new dictionary from components
+    /// Create a new dictionary from components.
+    ///
+    /// `seed` must be the seed the index was *built* with: queries hash
+    /// minimizers with a hasher derived from it, so a mismatch silently
+    /// returns zero hits.
     pub fn new(
         spss: SpectrumPreservingStringSet,
         control_map: MinimizersControlMap,
         index: SparseAndSkewIndex,
         k: usize,
         m: usize,
-        canonical: bool,
+        seed: u64,
     ) -> Self {
         Self {
             spss,
@@ -88,164 +93,77 @@ impl Dictionary {
             index,
             k,
             m,
-            canonical,
-            hasher: crate::hasher::DeterministicHasher::new(1),
+            seed,
+            hasher: crate::hasher::DeterministicHasher::new(seed),
         }
     }
 
     /// Look up a k-mer's position in the dictionary.
     ///
-    /// In a non-canonical index this falls back to the reverse complement (C++
-    /// `check_reverse_complement = true`). See [`Self::lookup_forward`] for the
-    /// strand-specific variant.
+    /// The index is canonical: a k-mer and its reverse complement share a
+    /// bucket, and one probe answers for both strands.
     #[inline]
     pub fn lookup<const K: usize>(&self, kmer: &Kmer<K>) -> u64
     where
         Kmer<K>: KmerBits,
     {
-        let (pos, _) = self.lookup_with_orientation(kmer);
-        pos
+        self.query(kmer).kmer_offset
     }
 
-    /// Strand-specific position lookup: no reverse-complement fallback in a
-    /// non-canonical index. Equivalent to C++ `lookup(kmer, false).kmer_offset`.
+    /// Alias of [`Self::lookup`]: in the unified canonical index both strands
+    /// are equivalent, so there is no strand-specific lookup to skip.
     #[inline]
     pub fn lookup_forward<const K: usize>(&self, kmer: &Kmer<K>) -> u64
     where
         Kmer<K>: KmerBits,
     {
-        let (pos, _) = self.lookup_with_orientation_impl::<K, false>(kmer);
-        pos
+        self.lookup(kmer)
     }
 
-    /// Position lookup choosing the RC fallback at runtime (mirror of C++
-    /// `lookup(kmer, check_reverse_complement)`).
+    /// Alias of [`Self::lookup`]; the flag is ignored (the index is canonical,
+    /// matching C++ v6 where the modality no longer exists).
     #[inline]
-    pub fn lookup_checked<const K: usize>(&self, kmer: &Kmer<K>, check_reverse_complement: bool) -> u64
+    pub fn lookup_checked<const K: usize>(&self, kmer: &Kmer<K>, _check_reverse_complement: bool) -> u64
     where
         Kmer<K>: KmerBits,
     {
-        let (pos, _) = if check_reverse_complement {
-            self.lookup_with_orientation_impl::<K, true>(kmer)
-        } else {
-            self.lookup_with_orientation_impl::<K, false>(kmer)
-        };
-        pos
+        self.lookup(kmer)
     }
 
-    /// Query a k-mer and return a full [`LookupResult`](crate::streaming_query::LookupResult).
-    ///
-    /// In a non-canonical (strand-specific) index, this tries the forward k-mer and
-    /// then falls back to its reverse complement (mirroring the C++ default of
-    /// `lookup(kmer, check_reverse_complement = true)`). Use [`Self::query_forward`]
-    /// for a strand-specific lookup that does not perform the RC fallback.
+    /// Query a k-mer and return a full [`LookupResult`](crate::streaming_query::LookupResult),
+    /// including the orientation (+1 forward / -1 backward) of the match.
     #[inline]
     pub fn query<const K: usize>(&self, kmer: &Kmer<K>) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        self.query_impl::<K, true>(kmer)
+        let kmer_rc = kmer.reverse_complement();
+        let mini = self.extract_minimizer(kmer, &kmer_rc);
+        self.lookup_with_minimizer(kmer, &kmer_rc, mini, None)
     }
 
-    /// Strand-specific query: only match the k-mer in its given orientation.
-    ///
-    /// In a non-canonical index this skips the reverse-complement fallback, so a
-    /// query for the RC of an indexed k-mer returns "not found". Equivalent to the
-    /// C++ `lookup(kmer, check_reverse_complement = false)`.
-    ///
-    /// Note: for a canonical index both strands are inherently equivalent, so this
-    /// behaves identically to [`Self::query`] (the flag is ignored, matching C++).
+    /// Alias of [`Self::query`]: both strands are equivalent in the canonical
+    /// index (the previous strand-specific behavior existed only for the
+    /// removed non-canonical modality).
     #[inline]
     pub fn query_forward<const K: usize>(&self, kmer: &Kmer<K>) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        self.query_impl::<K, false>(kmer)
+        self.query(kmer)
     }
 
-    /// Query a k-mer, choosing the RC fallback at runtime.
-    ///
-    /// Mirror of the C++ `lookup(kmer, check_reverse_complement)` API. Prefer the
-    /// const-generic [`Self::query`] / [`Self::query_forward`] when the choice is
-    /// known at compile time — those incur no branch on the hot path.
+    /// Alias of [`Self::query`]; the flag is ignored (the index is canonical).
     #[inline]
     pub fn query_checked<const K: usize>(
         &self,
         kmer: &Kmer<K>,
-        check_reverse_complement: bool,
+        _check_reverse_complement: bool,
     ) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        if check_reverse_complement {
-            self.query_impl::<K, true>(kmer)
-        } else {
-            self.query_impl::<K, false>(kmer)
-        }
-    }
-
-    /// Const-generic query core. `CHECK_RC` is monomorphized away, so the default
-    /// (`CHECK_RC = true`) path compiles to identical code as a hand-written
-    /// forward-then-RC lookup — zero cost relative to the previous implementation.
-    #[inline(always)]
-    fn query_impl<const K: usize, const CHECK_RC: bool>(
-        &self,
-        kmer: &Kmer<K>,
-    ) -> crate::streaming_query::LookupResult
-    where
-        Kmer<K>: KmerBits,
-    {
-        if self.canonical {
-            return self.query_canonical(kmer);
-        }
-
-        // Non-canonical mode: try forward k-mer first, then (optionally) RC
-        if let Some(res) = self.query_regular(kmer, 1) {
-            return res;
-        }
-        if CHECK_RC {
-            let kmer_rc = kmer.reverse_complement();
-            if let Some(res) = self.query_regular(&kmer_rc, -1) {
-                return res;
-            }
-        }
-        crate::streaming_query::LookupResult::not_found()
-    }
-
-    /// Internal: regular (non-canonical) lookup returning full LookupResult.
-    #[inline]
-    fn query_regular<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        orientation: i64,
-    ) -> Option<crate::streaming_query::LookupResult>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let minimizer_info = self.extract_minimizer(kmer);
-        let bucket_id = self.control_map.lookup(minimizer_info.value)?;
-        if bucket_id >= self.index.num_buckets() {
-            return None;
-        }
-
-        let mut hit = self.lookup_in_bucket::<K>(kmer, minimizer_info, bucket_id)?;
-        hit.orientation = orientation;
-        Some(hit.into_lookup_result(self.k))
-    }
-
-    /// Internal: canonical lookup returning full LookupResult.
-    #[inline]
-    fn query_canonical<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-    ) -> crate::streaming_query::LookupResult
-    where
-        Kmer<K>: KmerBits,
-    {
-        match self.lookup_canonical_located(kmer) {
-            Some(hit) => hit.into_lookup_result(self.k),
-            None => crate::streaming_query::LookupResult::not_found(),
-        }
+        self.query(kmer)
     }
 
     /// Query a k-mer given as a DNA string.
@@ -275,7 +193,7 @@ impl Dictionary {
     where
         Kmer<K>: KmerBits,
     {
-        self.extract_minimizer(kmer)
+        self.extract_minimizer(kmer, &kmer.reverse_complement())
     }
 
     /// Debug: get bucket and locate info for a k-mer
@@ -283,7 +201,7 @@ impl Dictionary {
     where
         Kmer<K>: KmerBits,
     {
-        let minimizer_info = self.extract_minimizer(kmer);
+        let minimizer_info = self.extract_minimizer(kmer, &kmer.reverse_complement());
         let bucket_id = self.control_map.lookup(minimizer_info.value)?;
         if bucket_id >= self.index.num_buckets() {
             return None;
@@ -292,338 +210,176 @@ impl Dictionary {
         Some((minimizer_info.value, bucket_id as u64, (end - begin) as u64))
     }
 
-    /// Look up a k-mer and return position + orientation.
-    ///
-    /// Non-canonical indexes fall back to the reverse complement (returning
-    /// orientation `-1`). For a strand-specific lookup use
-    /// [`Self::lookup_forward_with_orientation`].
+    /// Look up a k-mer and return position + orientation
+    /// (+1 forward / -1 backward; `(INVALID_UINT64, 1)` when absent).
     #[inline]
     pub fn lookup_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
     where
         Kmer<K>: KmerBits,
     {
-        self.lookup_with_orientation_impl::<K, true>(kmer)
+        let res = self.query(kmer);
+        (res.kmer_offset, res.kmer_orientation as i8)
     }
 
-    /// Strand-specific lookup with orientation: no RC fallback in a non-canonical
-    /// index. A query for the RC of an indexed k-mer returns `(INVALID_UINT64, 1)`.
+    /// Alias of [`Self::lookup_with_orientation`]: both strands are equivalent
+    /// in the unified canonical index.
     #[inline]
     pub fn lookup_forward_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
     where
         Kmer<K>: KmerBits,
     {
-        self.lookup_with_orientation_impl::<K, false>(kmer)
+        self.lookup_with_orientation(kmer)
     }
 
-    /// Const-generic core for position+orientation lookup. `CHECK_RC` is
-    /// monomorphized away; the default (`true`) path is identical to the previous
-    /// forward-then-RC implementation.
-    #[inline(always)]
-    fn lookup_with_orientation_impl<const K: usize, const CHECK_RC: bool>(
+    // -----------------------------------------------------------------------
+    // The one lookup path (unified canonical scheme)
+    // -----------------------------------------------------------------------
+
+    /// True if the m-mer stored at `minimizer_pos` is the minimizer or its
+    /// reverse complement. The minimizer's value is the *canonical* m-mer at
+    /// the anchored locus, so the text holds either orientation of it.
+    #[inline]
+    fn mmer_matches(&self, minimizer_pos: u64, value: u64) -> bool {
+        let read = self.spss.decode_mmer_at(minimizer_pos as usize, self.m);
+        read == value || crate::minimizer::reverse_complement_mmer(read, self.m) == value
+    }
+
+    /// Core lookup with a pre-computed minimizer.
+    ///
+    /// When `cache` is provided, bucket bounds are memoized across k-mers
+    /// sharing a minimizer, and for non-heavy buckets of at most
+    /// [`BucketCache::MAX_CACHED_POSITIONS`] entries the decoded locate set is
+    /// stored in it (at no extra cost — it is decoded here anyway), letting a
+    /// streaming query verify follow-up k-mers with the same minimizer via
+    /// [`Self::lookup_at_positions`] with no MPHF/EF/offset work.
+    ///
+    /// `minimizer_found` semantics: `false` means the minimizer is provably
+    /// absent from the index (any other k-mer carrying it is absent too);
+    /// on the heavy/skew path the probed position can belong to a different
+    /// minimizer without implying absence, so `minimizer_found` stays `true`
+    /// there even on mismatch (port of the C++ HEAVYLOAD comment).
+    pub(crate) fn lookup_with_minimizer<const K: usize>(
         &self,
         kmer: &Kmer<K>,
-    ) -> (u64, i8)
+        kmer_rc: &Kmer<K>,
+        mini: MinimizerInfo,
+        mut cache: Option<&mut BucketCache>,
+    ) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        if self.canonical {
-            self.lookup_canonical_with_orientation(kmer)
-        } else {
-            let (pos, ori) = self.lookup_regular_with_orientation(kmer);
-            if pos != INVALID_UINT64 {
-                return (pos, ori);
+        let bounds = match cache.as_deref_mut() {
+            Some(c) => {
+                c.size = 0;
+                self.resolve_bucket(mini.value, c)
             }
-            if CHECK_RC {
-                let kmer_rc = kmer.reverse_complement();
-                let (pos_rc, _) = self.lookup_regular_with_orientation(&kmer_rc);
-                if pos_rc != INVALID_UINT64 {
-                    return (pos_rc, -1);
+            None => self
+                .control_map
+                .lookup(mini.value)
+                .filter(|&id| id < self.index.num_buckets())
+                .map(|id| self.index.locate_bucket(id)),
+        };
+        let Some((begin, end)) = bounds else {
+            let mut res = crate::streaming_query::LookupResult::not_found();
+            res.minimizer_found = false;
+            return res;
+        };
+        let n = end - begin;
+        if n == 0 {
+            let mut res = crate::streaming_query::LookupResult::not_found();
+            res.minimizer_found = false;
+            return res;
+        }
+
+        let log2_size = ceil_log2(n as u64);
+        if log2_size > MIN_L {
+            // Heavy bucket: the skew index keys on the canonical k-mer.
+            let key = std::cmp::min(kmer.bits(), kmer_rc.bits());
+            let within_pos = self.index.skew_index.lookup(&key, log2_size);
+            if within_pos == INVALID_UINT64 || within_pos as usize >= n {
+                return crate::streaming_query::LookupResult::not_found();
+            }
+            let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
+            if !self.mmer_matches(minimizer_pos, mini.value) {
+                // A foreign k-mer probes an arbitrary in-bucket position, so a
+                // mismatch here says nothing about the minimizer's presence.
+                return crate::streaming_query::LookupResult::not_found();
+            }
+            match self.lookup_at_position(kmer, kmer_rc, minimizer_pos, mini.pos_in_kmer) {
+                Some(hit) => hit.into_lookup_result(self.k),
+                None => crate::streaming_query::LookupResult::not_found(),
+            }
+        } else {
+            // Singleton or light bucket: decode the locate set, then verify.
+            let mut buf = [0u64; 1 << MIN_L];
+            for (i, slot) in buf[..n].iter_mut().enumerate() {
+                *slot = self.index.offsets.index_value(begin + i) as u64;
+            }
+            // The bucket's positions all anchor the same minimizer, so one
+            // presence probe decides for the whole set: a mismatch means an
+            // out-of-set minimizer collided into this bucket through the MPHF.
+            if !self.mmer_matches(buf[0], mini.value) {
+                let mut res = crate::streaming_query::LookupResult::not_found();
+                res.minimizer_found = false;
+                return res;
+            }
+            if let Some(c) = cache {
+                if n <= BucketCache::MAX_CACHED_POSITIONS {
+                    c.positions[..n].copy_from_slice(&buf[..n]);
+                    c.size = n;
                 }
             }
-            (INVALID_UINT64, 1)
+            self.lookup_at_positions(&buf[..n], kmer, kmer_rc, mini)
         }
     }
 
-    #[inline]
-    fn lookup_regular_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
-    where
-        Kmer<K>: KmerBits,
-    {
-        let minimizer_info = self.extract_minimizer(kmer);
-        let bucket_id = match self.control_map.lookup(minimizer_info.value) {
-            Some(id) => id,
-            None => return (INVALID_UINT64, 1),
-        };
-        if bucket_id >= self.index.num_buckets() {
-            return (INVALID_UINT64, 1);
-        }
-
-        match self.lookup_in_bucket::<K>(kmer, minimizer_info, bucket_id) {
-            Some(hit) => (hit.kmer_offset, 1),
-            None => (INVALID_UINT64, 1),
-        }
-    }
-
-    #[inline]
-    fn lookup_canonical_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
-    where
-        Kmer<K>: KmerBits,
-    {
-        match self.lookup_canonical_located(kmer) {
-            Some(hit) => (hit.kmer_offset, hit.orientation as i8),
-            None => (INVALID_UINT64, 1),
-        }
-    }
-
-    #[inline]
-    fn lookup_canonical_located<const K: usize>(&self, kmer: &Kmer<K>) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let kmer_rc = kmer.reverse_complement();
-        let mini_fwd = self.extract_minimizer(kmer);
-        let mini_rc = self.extract_minimizer(&kmer_rc);
-
-        if mini_fwd.value < mini_rc.value {
-            self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_fwd)
-        } else if mini_rc.value < mini_fwd.value {
-            self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_rc)
-        } else {
-            if let Some(hit) = self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_fwd) {
-                return Some(hit);
-            }
-            self.lookup_canonical_with_minimizer::<K>(kmer, &kmer_rc, mini_rc)
-        }
-    }
-
-    #[inline]
-    fn lookup_canonical_with_minimizer<const K: usize>(
+    /// The verification half of [`Self::lookup_with_minimizer`]: try the
+    /// candidate loci of each position of the minimizer's locate set. The
+    /// positions must be the decoded locate set of `mini.value`, whose
+    /// presence at `positions[0]` has already been checked.
+    pub(crate) fn lookup_at_positions<const K: usize>(
         &self,
+        positions: &[u64],
         kmer: &Kmer<K>,
         kmer_rc: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-    ) -> Option<LocatedHit>
+        mini: MinimizerInfo,
+    ) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        let bucket_id = self.control_map.lookup(minimizer_info.value)?;
-        if bucket_id >= self.index.num_buckets() {
-            return None;
+        for &minimizer_pos in positions {
+            if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, minimizer_pos, mini.pos_in_kmer) {
+                return hit.into_lookup_result(self.k);
+            }
         }
-
-        self.lookup_in_bucket_canonical::<K>(kmer, kmer_rc, minimizer_info, bucket_id)
+        crate::streaming_query::LookupResult::not_found()
     }
 
-    // -----------------------------------------------------------------------
-    // Core bucket lookup helpers (replaces old 3-way LSB dispatch)
-    // -----------------------------------------------------------------------
-
-    /// Look up a k-mer in a bucket using the locate_bucket + size-based dispatch.
-    ///
-    /// For small buckets (ceil_log2(size) <= MIN_L): linear scan of offsets.
-    /// For large buckets: skew index MPHF lookup.
+    /// The minimizer is anchored at locus `pos_in_kmer` of the k-mer and, by
+    /// mirror-equivariance, at locus `k - m - pos_in_kmer` of its reverse
+    /// complement. So a minimizer occurrence at offset j anchors a k-mer
+    /// starting either at `j - pos_in_kmer` or at `j - (k - m - pos_in_kmer)`:
+    /// always exactly two candidates, with no case analysis.
     #[inline]
-    fn lookup_in_bucket<const K: usize>(
+    fn lookup_at_position<const K: usize>(
         &self,
         kmer: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-        bucket_id: usize,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let (begin, end) = self.index.locate_bucket(bucket_id);
-        self.lookup_in_bucket_bounds::<K>(kmer, minimizer_info, begin, end)
-    }
-
-    /// As [`Self::lookup_in_bucket`], but entered with the bucket bounds already
-    /// resolved. Splitting here is what lets a streaming caller reuse the bounds
-    /// it found for the previous k-mer (see `BucketCache`).
-    #[inline]
-    fn lookup_in_bucket_bounds<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-        begin: usize,
-        end: usize,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let n = end - begin;
-        if n == 0 {
-            return None;
-        }
-
-        let log2_size = ceil_log2(n as u64);
-        if log2_size > MIN_L {
-            // Heavy bucket: use skew index
-            let within_pos = self.index.skew_index.lookup(&kmer.bits(), log2_size);
-            if within_pos == INVALID_UINT64 || within_pos as usize >= n {
-                return None;
-            }
-            let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
-            self.lookup_from_minimizer_pos::<K>(kmer, minimizer_pos, minimizer_info)
-        } else {
-            // Singleton or light bucket: linear scan
-            self.lookup_bucket_linear::<K>(kmer, minimizer_info, begin, end)
-        }
-    }
-
-    /// Canonical lookup in a bucket using locate_bucket + size-based dispatch.
-    #[inline]
-    fn lookup_in_bucket_canonical<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        kmer_rc: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-        bucket_id: usize,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let (begin, end) = self.index.locate_bucket(bucket_id);
-        self.lookup_in_bucket_canonical_bounds::<K>(kmer, kmer_rc, minimizer_info, begin, end)
-    }
-
-    /// As [`Self::lookup_in_bucket_canonical`], but entered with the bucket
-    /// bounds already resolved.
-    #[inline]
-    fn lookup_in_bucket_canonical_bounds<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        kmer_rc: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-        begin: usize,
-        end: usize,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let n = end - begin;
-        if n == 0 {
-            return None;
-        }
-
-        let log2_size = ceil_log2(n as u64);
-        if log2_size > MIN_L {
-            // Heavy bucket: use skew index with canonical k-mer
-            let kmer_canon_value = std::cmp::min(kmer.bits(), kmer_rc.bits());
-            let within_pos = self.index.skew_index.lookup(&kmer_canon_value, log2_size);
-            if within_pos == INVALID_UINT64 || within_pos as usize >= n {
-                return None;
-            }
-            let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
-            self.lookup_from_minimizer_pos_canonical::<K>(kmer, kmer_rc, minimizer_pos, minimizer_info)
-        } else {
-            // Singleton or light bucket: linear scan
-            self.lookup_bucket_linear_canonical::<K>(kmer, kmer_rc, minimizer_info, begin, end)
-        }
-    }
-
-    /// Linear scan through offsets[begin..end] for regular lookup.
-    #[inline]
-    fn lookup_bucket_linear<const K: usize>(
-        &self,
-        query_kmer: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-        begin: usize,
-        end: usize,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        for i in begin..end {
-            let minimizer_pos = self.index.offsets.index_value(i) as u64;
-            if let Some(hit) = self.lookup_from_minimizer_pos::<K>(query_kmer, minimizer_pos, minimizer_info) {
-                return Some(hit);
-            }
-        }
-        None
-    }
-
-    /// Linear scan for canonical lookup (tries both fwd and RC pos_in_kmer).
-    #[inline]
-    fn lookup_bucket_linear_canonical<const K: usize>(
-        &self,
-        query_kmer: &Kmer<K>,
-        kmer_rc: &Kmer<K>,
-        minimizer_info: MinimizerInfo,
-        begin: usize,
-        end: usize,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        for i in begin..end {
-            let minimizer_pos = self.index.offsets.index_value(i) as u64;
-            if let Some(hit) = self.lookup_from_minimizer_pos_canonical::<K>(
-                query_kmer, kmer_rc, minimizer_pos, minimizer_info,
-            ) {
-                return Some(hit);
-            }
-        }
-        None
-    }
-
-    // -----------------------------------------------------------------------
-    // Low-level position verification helpers (unchanged)
-    // -----------------------------------------------------------------------
-
-    #[inline]
-    fn lookup_from_minimizer_pos<const K: usize>(
-        &self,
-        query_kmer: &Kmer<K>,
-        minimizer_pos: u64,
-        minimizer_info: MinimizerInfo,
-    ) -> Option<LocatedHit>
-    where
-        Kmer<K>: KmerBits,
-    {
-        let kmer_pos = minimizer_pos.checked_sub(minimizer_info.pos_in_kmer as u64)?;
-
-        let stored_kmer = self.spss.decode_kmer_at::<K>(kmer_pos as usize);
-
-        if stored_kmer.bits() == query_kmer.bits() {
-            let (string_id, string_begin, string_end) = self.spss.locate_with_end(kmer_pos)?;
-            if kmer_pos >= string_begin && kmer_pos < string_end - self.k as u64 + 1 {
-                return Some(LocatedHit { kmer_offset: kmer_pos, orientation: 1i64, string_id, string_begin, string_end });
-            }
-        }
-
-        None
-    }
-
-    /// Canonical lookup from minimizer position
-    #[inline]
-    fn lookup_from_minimizer_pos_canonical<const K: usize>(
-        &self,
-        query_kmer: &Kmer<K>,
         kmer_rc: &Kmer<K>,
         minimizer_pos: u64,
-        minimizer_info: MinimizerInfo,
+        pos_in_kmer: usize,
     ) -> Option<LocatedHit>
     where
         Kmer<K>: KmerBits,
     {
-        // Try forward position first
-        let pos_in_kmer_fwd = minimizer_info.pos_in_kmer as u64;
-        if let Some(hit) = self.try_canonical_lookup_at_pos::<K>(
-            query_kmer, kmer_rc, minimizer_pos, pos_in_kmer_fwd
-        ) {
+        if let Some(hit) = self.try_lookup_at(kmer, kmer_rc, minimizer_pos, pos_in_kmer as u64) {
             return Some(hit);
         }
-
-        // Try RC position (k - m - pos_in_kmer)
-        let pos_in_kmer_rc = K as u64 - self.m() as u64 - minimizer_info.pos_in_kmer as u64;
-        self.try_canonical_lookup_at_pos::<K>(
-            query_kmer, kmer_rc, minimizer_pos, pos_in_kmer_rc
-        )
+        self.try_lookup_at(kmer, kmer_rc, minimizer_pos, (K - self.m - pos_in_kmer) as u64)
     }
 
-    /// Try canonical lookup at a specific position with a given pos_in_kmer
+    /// Verify one candidate k-mer start against the SPSS text.
     #[inline]
-    fn try_canonical_lookup_at_pos<const K: usize>(
+    fn try_lookup_at<const K: usize>(
         &self,
         query_kmer: &Kmer<K>,
         kmer_rc: &Kmer<K>,
@@ -679,9 +435,17 @@ impl Dictionary {
         self.m
     }
 
-    /// Check if canonical mode is enabled
+    /// Whether the index is canonical. Always `true` since the unified
+    /// v6-style scheme: a k-mer and its reverse complement share a bucket and
+    /// every lookup reports orientation. Kept so downstream code compiles.
+    #[deprecated(since = "0.7.0", note = "the index is always canonical; this returns true")]
     pub fn canonical(&self) -> bool {
-        self.canonical
+        true
+    }
+
+    /// The build seed the index was constructed (and is queried) with.
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     /// Get a reference to the underlying SPSS
@@ -809,7 +573,7 @@ impl Dictionary {
         let header = DictionarySerializationHeader::new(
             self.k,
             self.m,
-            self.canonical,
+            self.seed,
             (self.index.skew_index.num_partitions() + 1) as u32,
         );
         header.write(&mut index_writer)?;
@@ -880,45 +644,24 @@ impl Dictionary {
             index,
             k: header.k,
             m: header.m,
-            canonical: header.canonical,
-            hasher: crate::hasher::DeterministicHasher::new(1),
+            seed: header.seed,
+            hasher: crate::hasher::DeterministicHasher::new(header.seed),
         })
     }
 
-    /// Extract the minimizer from a k-mer using the cached hasher.
+    /// Extract the minimizer from a k-mer using the cached hasher. Delegates
+    /// to the shared [`crate::minimizer::compute_minimizer`] so builder, point
+    /// lookup, and streaming all compute the identical scheme.
     #[inline]
-    pub(crate) fn extract_minimizer<const K: usize>(&self, kmer: &Kmer<K>) -> MinimizerInfo
+    pub(crate) fn extract_minimizer<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        kmer_rc: &Kmer<K>,
+    ) -> MinimizerInfo
     where
         Kmer<K>: KmerBits,
     {
-        self.extract_minimizer_inline::<K>(*kmer)
-    }
-
-    /// Inline minimizer extraction without creating a MinimizerIterator.
-    #[inline]
-    fn extract_minimizer_inline<const K: usize>(&self, kmer: Kmer<K>) -> MinimizerInfo
-    where
-        Kmer<K>: KmerBits,
-    {
-        let num_windows = self.k - self.m + 1;
-        let mask = (1u64 << (self.m * 2)) - 1;
-        let bits = <Kmer<K> as KmerBits>::to_u128(kmer.bits());
-
-        let mut min_hash = u64::MAX;
-        let mut min_value = 0u64;
-        let mut min_pos = 0usize;
-
-        for i in 0..num_windows {
-            let mmer_value = ((bits >> (i * 2)) as u64) & mask;
-            let hash = self.hasher.hash_u64(mmer_value);
-            if hash < min_hash {
-                min_hash = hash;
-                min_value = mmer_value;
-                min_pos = i;
-            }
-        }
-
-        MinimizerInfo::new(min_value, min_pos as u64, min_pos)
+        crate::minimizer::compute_minimizer(kmer, kmer_rc, self.m, &self.hasher)
     }
 
     // --- Streaming query helpers ---
@@ -945,117 +688,6 @@ impl Dictionary {
     }
 
 
-    /// Regular (non-canonical) lookup with pre-computed minimizer, returning LookupResult.
-    pub(crate) fn lookup_regular_streaming<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        mini_info: MinimizerInfo,
-    ) -> crate::streaming_query::LookupResult
-    where
-        Kmer<K>: KmerBits,
-    {
-        let bucket_id = match self.control_map.lookup(mini_info.value) {
-            Some(id) => id,
-            None => {
-                let mut res = crate::streaming_query::LookupResult::not_found();
-                res.minimizer_found = false;
-                return res;
-            }
-        };
-
-        if bucket_id >= self.index.num_buckets() {
-            let mut res = crate::streaming_query::LookupResult::not_found();
-            res.minimizer_found = false;
-            return res;
-        }
-
-        match self.lookup_in_bucket::<K>(kmer, mini_info, bucket_id) {
-            Some(hit) => hit.into_lookup_result(self.k),
-            None => crate::streaming_query::LookupResult::not_found(),
-        }
-    }
-
-    /// Canonical lookup with pre-computed minimizer, returning LookupResult.
-    pub(crate) fn lookup_canonical_streaming<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        kmer_rc: &Kmer<K>,
-        mini_info: MinimizerInfo,
-    ) -> crate::streaming_query::LookupResult
-    where
-        Kmer<K>: KmerBits,
-    {
-        let bucket_id = match self.control_map.lookup(mini_info.value) {
-            Some(id) => id,
-            None => {
-                let mut res = crate::streaming_query::LookupResult::not_found();
-                res.minimizer_found = false;
-                return res;
-            }
-        };
-
-        if bucket_id >= self.index.num_buckets() {
-            let mut res = crate::streaming_query::LookupResult::not_found();
-            res.minimizer_found = false;
-            return res;
-        }
-
-        match self.lookup_in_bucket_canonical::<K>(kmer, kmer_rc, mini_info, bucket_id) {
-            Some(hit) => hit.into_lookup_result(self.k),
-            None => crate::streaming_query::LookupResult::not_found(),
-        }
-    }
-
-    /// [`Self::lookup_regular_streaming`] with bucket-bounds memoization.
-    pub(crate) fn lookup_regular_streaming_cached<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        mini_info: MinimizerInfo,
-        cache: &mut BucketCache,
-    ) -> crate::streaming_query::LookupResult
-    where
-        Kmer<K>: KmerBits,
-    {
-        match self.resolve_bucket(mini_info.value, cache) {
-            None => {
-                let mut res = crate::streaming_query::LookupResult::not_found();
-                res.minimizer_found = false;
-                res
-            }
-            Some((begin, end)) => {
-                match self.lookup_in_bucket_bounds::<K>(kmer, mini_info, begin, end) {
-                    Some(hit) => hit.into_lookup_result(self.k),
-                    None => crate::streaming_query::LookupResult::not_found(),
-                }
-            }
-        }
-    }
-
-    /// [`Self::lookup_canonical_streaming`] with bucket-bounds memoization.
-    pub(crate) fn lookup_canonical_streaming_cached<const K: usize>(
-        &self,
-        kmer: &Kmer<K>,
-        kmer_rc: &Kmer<K>,
-        mini_info: MinimizerInfo,
-        cache: &mut BucketCache,
-    ) -> crate::streaming_query::LookupResult
-    where
-        Kmer<K>: KmerBits,
-    {
-        match self.resolve_bucket(mini_info.value, cache) {
-            None => {
-                let mut res = crate::streaming_query::LookupResult::not_found();
-                res.minimizer_found = false;
-                res
-            }
-            Some((begin, end)) => {
-                match self.lookup_in_bucket_canonical_bounds::<K>(kmer, kmer_rc, mini_info, begin, end) {
-                    Some(hit) => hit.into_lookup_result(self.k),
-                    None => crate::streaming_query::LookupResult::not_found(),
-                }
-            }
-        }
-    }
 }
 
 /// Memoized bucket-bounds resolution for a streaming query.
@@ -1081,6 +713,26 @@ pub(crate) struct BucketCache {
     /// `None` records a minimizer that is absent from the index -- worth
     /// caching too, since that is the other repeated outcome.
     bounds: Option<(usize, usize)>,
+    /// Number of decoded positions held in `positions` (0 = nothing cached).
+    /// Filled by `lookup_with_minimizer` for non-heavy buckets of at most
+    /// `MAX_CACHED_POSITIONS` entries, at no extra decode cost; consumed by
+    /// the streaming same-minimizer memo via `lookup_at_positions`.
+    pub(crate) size: usize,
+    /// The decoded locate set of `mini_value` (valid for `..size`).
+    pub(crate) positions: [u64; BucketCache::MAX_CACHED_POSITIONS],
+}
+
+impl BucketCache {
+    /// Largest bucket whose decoded locate set is cached. Heavy buckets are
+    /// never cached; larger light buckets are too rare to be worth more space
+    /// (mirrors C++ `bucket_cache::max_cached_size`).
+    pub(crate) const MAX_CACHED_POSITIONS: usize = 8;
+
+    /// Invalidate everything (used by `StreamingQuery::reset`).
+    pub(crate) fn reset(&mut self) {
+        self.valid = false;
+        self.size = 0;
+    }
 }
 
 #[cfg(test)]
@@ -1099,11 +751,11 @@ mod tests {
         );
         let index = SparseAndSkewIndex::new();
 
-        let dict = Dictionary::new(spss, control_map, index, 31, 13, false);
+        let dict = Dictionary::new(spss, control_map, index, 31, 13, 1);
 
         assert_eq!(dict.k(), 31);
         assert_eq!(dict.m(), 13);
-        assert!(!dict.canonical());
+        assert_eq!(dict.seed(), 1);
     }
 
     #[test]
@@ -1136,7 +788,7 @@ mod tests {
 
         // Extract minimizer
         let mut mini_iter = crate::minimizer::MinimizerIterator::with_seed(31, 21, 1);
-        let mini_info = mini_iter.next(kmer);
+        let mini_info = mini_iter.next(&kmer, &kmer.reverse_complement());
         eprintln!("K-mer minimizer: value={}, pos_in_kmer={}", mini_info.value, mini_info.pos_in_kmer);
 
         // Look up in control map
@@ -1158,66 +810,38 @@ mod tests {
     }
 
     #[test]
-    fn test_strand_specific_query_non_canonical() {
-        // Build a non-canonical (strand-specific) index from a single 7-mer so the
-        // only forward k-mer is `ACGTTGC` and its RC `GCAACGT` is *not* present
-        // in the forward orientation.
+    fn test_unified_index_answers_both_strands() {
+        // The unified scheme: one probe answers both strands, with orientation.
         let config = BuildConfiguration::new(7, 5).unwrap();
-        assert!(!config.canonical, "default build is non-canonical");
         let builder = DictionaryBuilder::new(config).unwrap();
         let dict = builder
             .build_from_sequences(vec!["ACGTTGC".to_string()])
             .unwrap();
-        assert!(!dict.canonical());
 
         let fwd = Kmer::<7>::from_str("ACGTTGC").unwrap();
         let rc = fwd.reverse_complement();
         assert_ne!(fwd.bits(), rc.bits(), "k-mer must not be its own RC");
 
-        // Forward k-mer: found regardless of RC handling.
+        // Both orientations found through every query entry point.
         assert!(dict.query::<7>(&fwd).is_found());
-        assert!(dict.query_forward::<7>(&fwd).is_found());
-
-        // RC of an indexed k-mer: the default falls back to RC and finds it, but
-        // the strand-specific query does not (this is the issue #1 request).
-        assert!(dict.query::<7>(&rc).is_found());
-        assert!(!dict.query_forward::<7>(&rc).is_found());
-
-        // Runtime-dispatch variant agrees with the const-generic ones.
-        assert!(dict.query_checked::<7>(&rc, true).is_found());
-        assert!(!dict.query_checked::<7>(&rc, false).is_found());
-
-        // Orientation is reported: forward => +1, RC fallback => -1.
-        assert_eq!(dict.lookup_with_orientation::<7>(&fwd).1, 1);
-        assert_eq!(dict.lookup_with_orientation::<7>(&rc).1, -1);
-
-        // Strand-specific position lookups.
-        assert_ne!(dict.lookup_forward::<7>(&fwd), INVALID_UINT64);
-        assert_eq!(dict.lookup_forward::<7>(&rc), INVALID_UINT64);
-        assert_eq!(dict.lookup_forward_with_orientation::<7>(&rc).0, INVALID_UINT64);
-        assert_eq!(dict.lookup_checked::<7>(&rc, false), INVALID_UINT64);
-        assert_ne!(dict.lookup_checked::<7>(&rc, true), INVALID_UINT64);
-    }
-
-    #[test]
-    fn test_strand_specific_query_canonical_ignores_flag() {
-        // For a canonical index both strands are equivalent, so the strand-specific
-        // query must behave identically to the default (flag ignored, matching C++).
-        let mut config = BuildConfiguration::new(7, 5).unwrap();
-        config.canonical = true;
-        let builder = DictionaryBuilder::new(config).unwrap();
-        let dict = builder
-            .build_from_sequences(vec!["ACGTTGC".to_string()])
-            .unwrap();
-        assert!(dict.canonical());
-
-        let fwd = Kmer::<7>::from_str("ACGTTGC").unwrap();
-        let rc = fwd.reverse_complement();
-
-        // Both orientations found, with or without the RC fallback flag.
-        assert!(dict.query::<7>(&fwd).is_found());
-        assert!(dict.query_forward::<7>(&fwd).is_found());
         assert!(dict.query::<7>(&rc).is_found());
         assert!(dict.query_forward::<7>(&rc).is_found());
+        assert!(dict.query_checked::<7>(&rc, false).is_found());
+
+        // Orientation is reported: forward => +1, reverse => -1, and the
+        // matched text position is the same for both strands.
+        assert_eq!(dict.lookup_with_orientation::<7>(&fwd).1, 1);
+        assert_eq!(dict.lookup_with_orientation::<7>(&rc).1, -1);
+        assert_eq!(
+            dict.query::<7>(&fwd).kmer_offset,
+            dict.query::<7>(&rc).kmer_offset
+        );
+        assert_ne!(dict.lookup_forward::<7>(&rc), INVALID_UINT64);
+
+        // An absent k-mer (and its RC) is not found, and the minimizer
+        // presence flag is meaningful.
+        let absent = Kmer::<7>::from_str("AAAAAAA").unwrap();
+        assert!(!dict.query::<7>(&absent).is_found());
+        assert!(!dict.query::<7>(&absent.reverse_complement()).is_found());
     }
 }

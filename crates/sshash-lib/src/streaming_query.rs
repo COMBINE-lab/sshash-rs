@@ -10,7 +10,7 @@
 //! - Skip searches when minimizer unchanged and previous lookup failed
 
 use crate::kmer::{Kmer, KmerBits};
-use crate::minimizer::{MinimizerInfo, MinimizerIterator, MinimizerIteratorRc};
+use crate::minimizer::{MinimizerInfo, MinimizerIterator};
 
 /// Result of a k-mer lookup
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,21 +93,17 @@ where
     Kmer<K>: KmerBits,
 {
     _k: usize,
-    _m: usize,
-    _canonical: bool,
+    m: usize,
 
     // K-mer state (zero-initialized; `start` flag tracks validity)
     start: bool,
     kmer: Kmer<K>,
     kmer_rc: Kmer<K>,
 
-    // Minimizer state
+    // Minimizer state: one iterator, one order, both strands (the unified
+    // canonical scheme is mirror-equivariant, so no RC iterator is needed).
     minimizer_it: MinimizerIterator,
-    minimizer_it_rc: MinimizerIteratorRc,
     curr_mini_info: MinimizerInfo,
-    prev_mini_info: MinimizerInfo,
-    curr_mini_info_rc: MinimizerInfo,
-    prev_mini_info_rc: MinimizerInfo,
 
     // String extension state
     remaining_string_bases: u64,
@@ -118,12 +114,24 @@ where
     // Result state
     result: LookupResult,
 
+    /// Last real-seed state, for the same-minimizer memos of `seed_with_dict`:
+    /// the minimizer of the last dictionary seed (with, for the singleton
+    /// shortcut, the stream position of its occurrence) and whether a
+    /// positive match anchors it. The sentinel value `u64::MAX` can never be
+    /// a real minimizer (m <= 31 means values fit 62 bits).
+    last_seed_mini_info: MinimizerInfo,
+    last_seed_positive: bool,
+
     // Performance counters
     num_searches: u64,
     num_extensions: u64,
     num_invalid: u64,
     num_negative: u64,
-    /// Memoized bucket bounds for the current minimizer (see `BucketCache`).
+    num_skipped_singleton_lookups: u64,
+    num_bucket_cache_hits: u64,
+
+    /// Memoized bucket bounds + decoded locate set for the current minimizer
+    /// (see `BucketCache`).
     bucket_cache: crate::dictionary::BucketCache,
 }
 
@@ -136,34 +144,40 @@ where
     /// # Arguments
     /// * `k` - K-mer size
     /// * `m` - Minimizer size
-    /// * `canonical` - Whether to use canonical k-mers (min of forward/RC)
-    pub fn new(k: usize, m: usize, canonical: bool) -> Self {
+    /// * `_canonical` - Ignored since 0.7.0: the index is always canonical.
+    ///   Kept so existing callers compile.
+    pub fn new(k: usize, m: usize, _canonical: bool) -> Self {
+        Self::with_seed(k, m, 1)
+    }
+
+    /// Create a new streaming query engine with an explicit hasher seed
+    /// (must match the seed the queried dictionary was built with).
+    pub fn with_seed(k: usize, m: usize, seed: u64) -> Self {
         assert_eq!(k, K, "k parameter must match const generic K");
 
         let dummy_mini = MinimizerInfo::new(u64::MAX, 0, 0);
 
         Self {
             _k: k,
-            _m: m,
-            _canonical: canonical,
+            m,
             start: true,
             kmer: Kmer::new(<Kmer<K> as KmerBits>::from_u64(0)),
             kmer_rc: Kmer::new(<Kmer<K> as KmerBits>::from_u64(0)),
-            minimizer_it: MinimizerIterator::with_seed(k, m, 1),
-            minimizer_it_rc: MinimizerIteratorRc::with_seed(k, m, 1),
+            minimizer_it: MinimizerIterator::with_seed(k, m, seed),
             curr_mini_info: dummy_mini,
-            prev_mini_info: dummy_mini,
-            curr_mini_info_rc: dummy_mini,
-            prev_mini_info_rc: dummy_mini,
             remaining_string_bases: 0,
             buf_bit_pos: 0,
             buf: 0,
             buf_avail: 0,
             result: LookupResult::not_found(),
+            last_seed_mini_info: dummy_mini,
+            last_seed_positive: false,
             num_searches: 0,
             num_extensions: 0,
             num_invalid: 0,
             num_negative: 0,
+            num_skipped_singleton_lookups: 0,
+            num_bucket_cache_hits: 0,
             bucket_cache: Default::default(),
         }
     }
@@ -174,7 +188,12 @@ where
         self.remaining_string_bases = 0;
         self.result = LookupResult::not_found();
         self.minimizer_it.set_position(0);
-        self.minimizer_it_rc.set_position(0);
+        // The stream coordinate frame restarts, so the position-anchored
+        // singleton memo must not survive; the bucket cache's contents are
+        // pure functions of the minimizer value but are dropped with it.
+        self.last_seed_mini_info = MinimizerInfo::new(u64::MAX, 0, 0);
+        self.last_seed_positive = false;
+        self.bucket_cache.reset();
     }
 
     /// Perform a streaming lookup for a k-mer
@@ -220,8 +239,7 @@ where
             self.kmer_rc = self.kmer_rc.append_base(complement);
         }
 
-        self.curr_mini_info = self.minimizer_it.next(self.kmer);
-        self.curr_mini_info_rc = self.minimizer_it_rc.next(self.kmer_rc);
+        self.curr_mini_info = self.minimizer_it.next(&self.kmer, &self.kmer_rc);
 
         // 3. Compute result (either extend or search)
         if self.remaining_string_bases == 0 {
@@ -231,9 +249,23 @@ where
         }
 
         // 4. Update state
-        self.prev_mini_info = self.curr_mini_info;
-        self.prev_mini_info_rc = self.curr_mini_info_rc;
         self.start = false;
+
+        // Ground-truth check (debug builds): every streaming result — memo
+        // answers included — must equal the corresponding point lookup on the
+        // fields C++ `equal_lookup_result` compares.
+        #[cfg(debug_assertions)]
+        {
+            let point = dict.query::<K>(&self.kmer);
+            debug_assert_eq!(self.result.kmer_id, point.kmer_id, "streaming != point (kmer_id)");
+            if self.result.is_found() {
+                debug_assert_eq!(self.result.kmer_id_in_string, point.kmer_id_in_string);
+                debug_assert_eq!(self.result.kmer_orientation, point.kmer_orientation);
+                debug_assert_eq!(self.result.string_id, point.string_id);
+                debug_assert_eq!(self.result.string_begin, point.string_begin);
+                debug_assert_eq!(self.result.string_end, point.string_end);
+            }
+        }
 
         self.result
     }
@@ -266,23 +298,26 @@ where
             self.kmer_rc = self.kmer_rc.append_base(complement);
         }
 
-        self.curr_mini_info = self.minimizer_it.next(self.kmer);
-        self.curr_mini_info_rc = self.minimizer_it_rc.next(self.kmer_rc);
+        self.curr_mini_info = self.minimizer_it.next(&self.kmer, &self.kmer_rc);
 
         // 3. Compute result (either extend or search)
-        if self.remaining_string_bases == 0 {
-            self.seed(dict_opt);
-        } else {
-            if let Some(dict) = dict_opt {
-                self.try_extend(dict);
-            } else {
-                self.seed(dict_opt);
+        match dict_opt {
+            Some(dict) => {
+                if self.remaining_string_bases == 0 {
+                    self.seed_with_dict(dict);
+                } else {
+                    self.try_extend(dict);
+                }
+            }
+            None => {
+                // MVP path without a dictionary: nothing to search.
+                self.remaining_string_bases = 0;
+                self.result = LookupResult::not_found();
+                self.num_negative += 1;
             }
         }
 
         // 4. Update state
-        self.prev_mini_info = self.curr_mini_info;
-        self.prev_mini_info_rc = self.curr_mini_info_rc;
         self.start = false;
 
         self.result
@@ -306,117 +341,87 @@ where
         matches!(b, b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't')
     }
 
-    /// Perform a full search (seed) for the current k-mer
+    /// Perform a full search (seed) for the current k-mer.
     ///
-    /// This is called when we can't extend within the current string.
-    fn seed(&mut self, dict_opt: Option<&crate::dictionary::Dictionary>) {
+    /// Called when we can't extend within the current string. Outlined: it
+    /// inlines into `lookup` at two call sites, and its body (grown by the
+    /// same-minimizer memos) measurably slows down streams that rarely seed
+    /// when left inline (observed in C++, commit c22c897).
+    ///
+    /// When the seeded k-mer carries the same minimizer as the last seed,
+    /// three memos answer without (or with reduced) dictionary work:
+    ///
+    /// (a) the minimizer was absent at the last seed: any k-mer having the
+    ///     same minimizer is surely absent as well — negative for free;
+    /// (b) the last seed matched via a singleton bucket at stream position L
+    ///     and the current k-mer still carries the very same minimizer
+    ///     occurrence (same stream position: the scheme is forward, so a
+    ///     sampled position, once abandoned, is never re-selected). The only
+    ///     locus the k-mer could occupy is the one the just-failed extension
+    ///     step already rejected, or it lies beyond the string boundary; the
+    ///     mirror locus hosts the reverse complement of the occurrence, so
+    ///     it is excluded whenever the minimizer is not its own reverse
+    ///     complement (self-RC minimizers, possible for even m only, fall
+    ///     through) — negative with no text access at all;
+    /// (c) the decoded locate set of the bucket is cached: verify the
+    ///     candidate loci directly against the text, with no MPHF access and
+    ///     no offset decoding.
+    ///
+    /// Heavy buckets fall through to the full lookup. Error-free positive
+    /// streams never enter the memos and are unaffected.
+    #[inline(never)]
+    fn seed_with_dict(&mut self, dict: &crate::dictionary::Dictionary) {
         self.remaining_string_bases = 0;
 
-        // Optimization: if minimizer unchanged and previous was not found, skip
-        if !self.start
-            && self.curr_mini_info.value == self.prev_mini_info.value
-            && self.curr_mini_info_rc.value == self.prev_mini_info_rc.value
-            && !self.result.minimizer_found
-        {
-            assert_eq!(self.result.kmer_id, u64::MAX);
-            self.num_negative += 1;
-            return;
-        }
+        let kmer = self.kmer;
+        let kmer_rc = self.kmer_rc;
+        let curr = self.curr_mini_info;
 
-        if let Some(dict) = dict_opt {
-            let kmer = self.kmer;
-            let kmer_rc = self.kmer_rc;
-            let mini_fwd = self.curr_mini_info;
-            let mini_rc = self.curr_mini_info_rc;
-
-            if self._canonical {
-                if mini_fwd.value < mini_rc.value {
-                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
-                } else if mini_rc.value < mini_fwd.value {
-                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
-                } else {
-                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
-                    if self.result.kmer_id == u64::MAX {
-                        self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
-                    }
-                }
-            } else {
-                self.result = dict.lookup_regular_streaming_cached::<K>(&kmer, mini_fwd, &mut self.bucket_cache);
-                let minimizer_found = self.result.minimizer_found;
-                if self.result.kmer_id == u64::MAX {
-                    assert_eq!(self.result.kmer_orientation, 1);
-                    self.result = dict.lookup_regular_streaming_cached::<K>(&kmer_rc, mini_rc, &mut self.bucket_cache);
-                    self.result.kmer_orientation = -1;
-                    let minimizer_rc_found = self.result.minimizer_found;
-                    self.result.minimizer_found = minimizer_rc_found || minimizer_found;
-                }
-            }
-
-            if self.result.kmer_id == u64::MAX {
+        if curr.value == self.last_seed_mini_info.value {
+            // (a) minimizer absent at the last seed.
+            if !self.result.minimizer_found {
+                debug_assert_eq!(self.result.kmer_id, u64::MAX);
                 self.num_negative += 1;
                 return;
             }
 
-            assert!(self.result.minimizer_found);
-            self.num_searches += 1;
-
-            let string_size = self.result.string_end - self.result.string_begin;
-            if self.result.kmer_orientation > 0 {
-                self.remaining_string_bases =
-                    (string_size - K as u64) - self.result.kmer_id_in_string;
-            } else {
-                self.remaining_string_bases = self.result.kmer_id_in_string;
+            // (b) singleton bucket, same minimizer occurrence, positive anchor.
+            if self.last_seed_positive
+                && self.bucket_cache.size == 1
+                && curr.position == self.last_seed_mini_info.position
+                && !crate::minimizer::is_self_rc_mmer(curr.value, self.m)
+            {
+                self.result = LookupResult::not_found();
+                self.num_negative += 1;
+                self.num_skipped_singleton_lookups += 1;
+                return;
             }
-            self.buf_bit_pos = self.result.string_begin + self.result.kmer_id_in_string;
-            self.buf_avail = 0;
-        } else {
-            self.result = LookupResult::not_found();
-            self.num_negative += 1;
-        }
-    }
 
-    /// Perform a full search (seed) for the current k-mer — non-Option hot path
-    #[inline(always)]
-    fn seed_with_dict(&mut self, dict: &crate::dictionary::Dictionary) {
-        self.remaining_string_bases = 0;
-
-        if !self.start
-            && self.curr_mini_info.value == self.prev_mini_info.value
-            && self.curr_mini_info_rc.value == self.prev_mini_info_rc.value
-            && !self.result.minimizer_found
-        {
-            debug_assert_eq!(self.result.kmer_id, u64::MAX);
-            self.num_negative += 1;
-            return;
-        }
-
-        let kmer = self.kmer;
-        let kmer_rc = self.kmer_rc;
-        let mini_fwd = self.curr_mini_info;
-        let mini_rc = self.curr_mini_info_rc;
-
-        if self._canonical {
-            if mini_fwd.value < mini_rc.value {
-                self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
-            } else if mini_rc.value < mini_fwd.value {
-                self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
-            } else {
-                self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_fwd, &mut self.bucket_cache);
+            // (c) cached locate set: verify directly against the text.
+            if self.bucket_cache.size != 0 {
+                let n = self.bucket_cache.size;
+                let positions = self.bucket_cache.positions;
+                self.result = dict.lookup_at_positions(&positions[..n], &kmer, &kmer_rc, curr);
+                self.num_bucket_cache_hits += 1;
                 if self.result.kmer_id == u64::MAX {
-                    self.result = dict.lookup_canonical_streaming_cached::<K>(&kmer, &kmer_rc, mini_rc, &mut self.bucket_cache);
+                    self.num_negative += 1;
+                    return;
                 }
+                // Keep the singleton shortcut anchored to the latest match.
+                self.last_seed_mini_info = curr;
+                self.last_seed_positive = true;
+                self.num_searches += 1;
+                self.begin_extension();
+                return;
             }
-        } else {
-            self.result = dict.lookup_regular_streaming_cached::<K>(&kmer, mini_fwd, &mut self.bucket_cache);
-            let minimizer_found = self.result.minimizer_found;
-            if self.result.kmer_id == u64::MAX {
-                debug_assert_eq!(self.result.kmer_orientation, 1);
-                self.result = dict.lookup_regular_streaming_cached::<K>(&kmer_rc, mini_rc, &mut self.bucket_cache);
-                self.result.kmer_orientation = -1;
-                let minimizer_rc_found = self.result.minimizer_found;
-                self.result.minimizer_found = minimizer_rc_found || minimizer_found;
-            }
+
+            // Heavy bucket: fall through to the full lookup.
         }
+
+        self.result =
+            dict.lookup_with_minimizer(&kmer, &kmer_rc, curr, Some(&mut self.bucket_cache));
+        self.last_seed_mini_info = curr;
+        self.last_seed_positive = self.result.kmer_id != u64::MAX;
 
         if self.result.kmer_id == u64::MAX {
             self.num_negative += 1;
@@ -425,7 +430,12 @@ where
 
         debug_assert!(self.result.minimizer_found);
         self.num_searches += 1;
+        self.begin_extension();
+    }
 
+    /// Set up single-base extension state from a fresh positive result.
+    #[inline(always)]
+    fn begin_extension(&mut self) {
         let string_size = self.result.string_end - self.result.string_begin;
         if self.result.kmer_orientation > 0 {
             self.remaining_string_bases =
@@ -534,6 +544,16 @@ where
     pub fn num_invalid_lookups(&self) -> u64 {
         self.num_invalid
     }
+
+    /// Negatives answered by the singleton same-occurrence memo (no text access).
+    pub fn num_skipped_singleton_lookups(&self) -> u64 {
+        self.num_skipped_singleton_lookups
+    }
+
+    /// Seeds answered from the cached locate set (no MPHF/offset decoding).
+    pub fn num_bucket_cache_hits(&self) -> u64 {
+        self.num_bucket_cache_hits
+    }
 }
 
 #[cfg(test)]
@@ -561,8 +581,7 @@ mod tests {
     fn test_streaming_query_creation() {
         let query: StreamingQuery<31> = StreamingQuery::new(31, 13, true);
         assert_eq!(query._k, 31);
-        assert_eq!(query._m, 13);
-        assert!(query._canonical);
+        assert_eq!(query.m, 13);
         assert_eq!(query.num_searches(), 0);
     }
 
@@ -641,10 +660,9 @@ where
 {
     /// Create a new streaming query engine for a dictionary
     pub fn new(dict: &'a crate::dictionary::Dictionary) -> Self {
-        let canonical = dict.canonical();
         Self {
             dict,
-            query: StreamingQuery::new(dict.k(), dict.m(), canonical),
+            query: StreamingQuery::with_seed(dict.k(), dict.m(), dict.seed()),
         }
     }
     
@@ -669,6 +687,16 @@ where
         self.query.num_extensions()
     }
     
+    /// Negatives answered by the singleton same-occurrence memo.
+    pub fn num_skipped_singleton_lookups(&self) -> u64 {
+        self.query.num_skipped_singleton_lookups()
+    }
+
+    /// Seeds answered from the cached locate set.
+    pub fn num_bucket_cache_hits(&self) -> u64 {
+        self.query.num_bucket_cache_hits()
+    }
+
     /// Get statistics
     pub fn stats(&self) -> StreamingQueryStats {
         StreamingQueryStats {
@@ -676,6 +704,8 @@ where
             num_extensions: self.query.num_extensions(),
             num_invalid: self.query.num_invalid_lookups(),
             num_negative: self.query.num_negative_lookups(),
+            num_skipped_singleton_lookups: self.query.num_skipped_singleton_lookups(),
+            num_bucket_cache_hits: self.query.num_bucket_cache_hits(),
         }
     }
 }
@@ -691,4 +721,8 @@ pub struct StreamingQueryStats {
     pub num_invalid: u64,
     /// Number of k-mers not found in the dictionary
     pub num_negative: u64,
+    /// Negatives answered by the singleton same-occurrence memo
+    pub num_skipped_singleton_lookups: u64,
+    /// Seeds answered from the cached locate set (no MPHF/offset decoding)
+    pub num_bucket_cache_hits: u64,
 }

@@ -35,7 +35,8 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
 
-        /// Use canonical k-mers (k-mer or reverse complement, whichever is smaller)
+        /// Deprecated: the index is always canonical (flag accepted for
+        /// compatibility, ignored with a warning)
         #[arg(long, default_value = "false")]
         canonical: bool,
 
@@ -186,7 +187,6 @@ fn build_command(
     info!("  Input: {}", input);
     info!("  k: {}", k);
     info!("  m: {}", m);
-    info!("  Canonical: {}", canonical);
     info!("  RAM limit: {} GiB", ram_limit);
     
     // Read sequences - detect format by trying FASTA/FASTQ first, then plain text
@@ -196,7 +196,9 @@ fn build_command(
     // Create builder configuration
     let mut config = BuildConfiguration::new(k, m)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    config.canonical = canonical;
+    if canonical {
+        warn!("--canonical is deprecated: the index is always canonical");
+    }
     config.verbose = verbose;
     config.ram_limit_gib = ram_limit;
     config.num_threads = threads;
@@ -233,7 +235,7 @@ fn bench_command(index: String) -> anyhow::Result<()> {
     
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
-    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+    info!("Dictionary loaded (k={}, m={})", k, dict.m());
     
     dict.print_space_breakdown();
 
@@ -370,10 +372,9 @@ fn stream_bench_command(index: String, query: String) -> anyhow::Result<()> {
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
     info!(
-        "Dictionary loaded (k={}, m={}, canonical={})",
+        "Dictionary loaded (k={}, m={})",
         k,
         dict.m(),
-        dict.canonical()
     );
 
     info!("Loading query sequences from {}...", query);
@@ -468,10 +469,9 @@ fn point_bench_command(index: String, query: String) -> anyhow::Result<()> {
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
     info!(
-        "Dictionary loaded (k={}, m={}, canonical={})",
+        "Dictionary loaded (k={}, m={})",
         k,
         dict.m(),
-        dict.canonical()
     );
 
     info!("Loading query sequences from {}...", query);
@@ -556,15 +556,15 @@ fn query_command(index: String, query: String, streaming: bool, forward_only: bo
 
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
-    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+    info!("Dictionary loaded (k={}, m={})", k, dict.m());
 
     if forward_only && streaming {
         return Err(anyhow::anyhow!(
             "--forward-only is not supported with --streaming (the streaming query always checks the reverse complement, matching C++)"
         ));
     }
-    if forward_only && dict.canonical() {
-        warn!("--forward-only has no effect on a canonical index (both strands are equivalent)");
+    if forward_only {
+        warn!("--forward-only has no effect: the index is canonical (both strands are equivalent)");
     }
 
     sshash_lib::dispatch_on_k!(k, K => {
@@ -712,7 +712,7 @@ fn check_command(index: String, input: String, streaming: bool) -> anyhow::Resul
 
     let dict = Dictionary::load(&index)?;
     let k = dict.k();
-    info!("Dictionary loaded (k={}, m={}, canonical={})", k, dict.m(), dict.canonical());
+    info!("Dictionary loaded (k={}, m={})", k, dict.m());
     
     sshash_lib::dispatch_on_k!(k, K => {
         check_with_k::<K>(&dict, &input, streaming)
