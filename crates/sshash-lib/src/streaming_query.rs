@@ -459,8 +459,10 @@ where
             } else {
                 self.load_forward_base(dict, new_base_pos)
             };
-            let kmer_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer.bits());
-            if spss_base == (kmer_u64 >> (2 * (K - 1))) & 3 {
+            // The newest base sits at bits [2(K-1), 2K): extract it in storage
+            // width. Going through to_u64 truncates u128 storage and the
+            // 2*(K-1) shift overflows u64 for K >= 33.
+            if spss_base == u64::from(self.kmer.get_base(K - 1)) {
                 self.num_extensions += 1;
                 self.result.kmer_id += 1;
                 self.result.kmer_id_in_string += 1;
@@ -470,8 +472,7 @@ where
         } else {
             self.buf_bit_pos -= 1;
             let spss_base = Self::get_base(dict, self.buf_bit_pos as usize);
-            let kmer_rc_u64 = <Kmer<K> as KmerBits>::to_u64(self.kmer_rc.bits());
-            if spss_base == (kmer_rc_u64 & 3) {
+            if spss_base == u64::from(self.kmer_rc.get_base(0)) {
                 self.num_extensions += 1;
                 self.result.kmer_id -= 1;
                 self.result.kmer_id_in_string -= 1;

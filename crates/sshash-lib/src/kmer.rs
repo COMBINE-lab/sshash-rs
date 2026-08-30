@@ -423,13 +423,10 @@ where
         // Shift left by 2 bits
         let shifted = <Kmer<K> as KmerBits>::shl(self.bits, 2);
         
-        // Mask to keep only K bases (2K bits)
-        let mask_bits = 2 * K;
-        let mask = if mask_bits >= <Kmer<K> as KmerBits>::BITS {
-            <Kmer<K> as KmerBits>::from_u8(0xFF) // All ones (won't happen for valid K)
-        } else {
-            <Kmer<K> as KmerBits>::from_u64((1u64 << mask_bits) - 1)
-        };
+        // Mask to keep only K bases (2K bits). Built in u128 so the shift
+        // cannot overflow: 2K <= 126 for every valid K, and from_u128
+        // truncates correctly for u64 storage (where 2K <= 62).
+        let mask = <Kmer<K> as KmerBits>::from_u128((1u128 << (2 * K)) - 1);
         
         let masked = <Kmer<K> as KmerBits>::bitand(shifted, mask);
         
