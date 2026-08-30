@@ -42,6 +42,12 @@ pub struct BuildConfiguration {
     
     /// Verbose output during construction
     pub verbose: bool,
+
+    /// Force the external-sort build path regardless of estimated size.
+    /// For tests and diagnostics (the two paths must produce identical
+    /// dictionaries); not exposed on the CLI.
+    #[doc(hidden)]
+    pub force_external_sort: bool,
     
     /// Directory for temporary files during construction
     pub tmp_dirname: PathBuf,
@@ -61,6 +67,7 @@ impl Default for BuildConfiguration {
             partitioned_mphf: true,
             weighted: false,
             verbose: true,
+            force_external_sort: false,
             tmp_dirname: PathBuf::from("sshash_tmp"),
         }
     }

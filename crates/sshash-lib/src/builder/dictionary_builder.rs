@@ -110,7 +110,9 @@ impl DictionaryBuilder {
         let k = self.config.k as u64;
         let total_kmers = total_bases.saturating_sub(num_strings * (k - 1));
 
-        if needs_external_sorting(total_kmers, self.config.ram_limit_gib) {
+        if self.config.force_external_sort
+            || needs_external_sorting(total_kmers, self.config.ram_limit_gib)
+        {
             info!("Using external sorting: estimated {} k-mers exceeds RAM limit of {} GiB",
                 total_kmers, self.config.ram_limit_gib);
             self.build_with_external_sort(spss)
