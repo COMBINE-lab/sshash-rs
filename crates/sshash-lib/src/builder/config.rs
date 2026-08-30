@@ -88,7 +88,7 @@ impl BuildConfiguration {
     /// Validate the configuration parameters
     pub fn validate(&self) -> Result<(), String> {
         // Check k is odd and in valid range
-        if self.k % 2 == 0 {
+        if self.k.is_multiple_of(2) {
             return Err(format!("k must be odd, got k={}", self.k));
         }
         if self.k < 3 || self.k > 63 {

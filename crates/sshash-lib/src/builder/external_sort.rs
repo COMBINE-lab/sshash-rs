@@ -694,11 +694,11 @@ impl FileMergingIterator {
         let mut min_tuple: Option<MinimizerTupleExternal> = None;
 
         for (i, tuple_opt) in self.current_tuples.iter().enumerate() {
-            if let Some(tuple) = tuple_opt {
-                if min_tuple.is_none() || *tuple < min_tuple.unwrap() {
-                    min_tuple = Some(*tuple);
-                    self.min_idx = i;
-                }
+            if let Some(tuple) = tuple_opt
+                && (min_tuple.is_none() || *tuple < min_tuple.unwrap())
+            {
+                min_tuple = Some(*tuple);
+                self.min_idx = i;
             }
         }
     }

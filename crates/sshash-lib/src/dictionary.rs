@@ -337,19 +337,19 @@ impl Dictionary {
                 res.minimizer_found = false;
                 return res;
             }
-            if let Some(c) = cache {
-                if n <= BucketCache::MAX_CACHED_POSITIONS {
-                    // Decode into the cache (no extra cost — the verification
-                    // consumes the same values) so a streaming follow-up with
-                    // this minimizer skips the MPHF/EF/offset work entirely.
-                    c.positions[0] = first_pos;
-                    for i in 1..n {
-                        c.positions[i] = self.index.offsets.index_value(begin + i) as u64;
-                    }
-                    c.size = n;
-                    let positions = c.positions;
-                    return self.lookup_at_positions(&positions[..n], kmer, kmer_rc, mini);
+            if let Some(c) = cache
+                && n <= BucketCache::MAX_CACHED_POSITIONS
+            {
+                // Decode into the cache (no extra cost — the verification
+                // consumes the same values) so a streaming follow-up with
+                // this minimizer skips the MPHF/EF/offset work entirely.
+                c.positions[0] = first_pos;
+                for i in 1..n {
+                    c.positions[i] = self.index.offsets.index_value(begin + i) as u64;
                 }
+                c.size = n;
+                let positions = c.positions;
+                return self.lookup_at_positions(&positions[..n], kmer, kmer_rc, mini);
             }
             // No caching: verify straight off the offsets array, no buffering.
             if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, first_pos, mini.pos_in_kmer) {

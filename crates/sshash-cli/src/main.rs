@@ -878,7 +878,7 @@ where
                 }
             }
 
-            if total % 100000 == 0 {
+            if total.is_multiple_of(100000) {
                 info!("  Checked {} k-mers...", total);
             }
         }
