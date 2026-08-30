@@ -39,8 +39,7 @@ where
     sshash_lib::Kmer<K>: sshash_lib::KmerBits,
 {
     let sequences = lcg_sequences(0x5b_5b + K as u64, 8, 300);
-    let mut config = BuildConfiguration::new(K, m).expect("valid config");
-    config.canonical = true;
+    let config = BuildConfiguration::new(K, m).expect("valid config");
     let dict = DictionaryBuilder::new(config)
         .expect("builder")
         .build_from_sequences(sequences.clone())

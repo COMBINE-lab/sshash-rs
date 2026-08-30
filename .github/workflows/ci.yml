@@ -24,6 +24,5 @@ jobs:
         run: cargo test --workspace --release
       - name: heavy minimizer property grid
         run: cargo test --release -p sshash-lib --test minimizer_properties -- --ignored
-      - name: clippy (informational — pre-existing lints not yet triaged)
-        run: cargo clippy --workspace --all-targets
-        continue-on-error: true
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

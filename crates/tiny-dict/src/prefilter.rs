@@ -115,7 +115,7 @@ mod tests {
     fn no_false_negatives() {
         // Every inserted key must be reported present. This is the property the
         // dictionary's correctness depends on.
-        let keys: Vec<u64> = (0..200_000u64).map(|i| i.wrapping_mul(0x1234_5678_9ABC_DEF)).collect();
+        let keys: Vec<u64> = (0..200_000u64).map(|i| i.wrapping_mul(0x0123_4567_89AB_CDEF)).collect();
         let f = BlockedBloom::build(keys.iter().copied(), keys.len());
         for &k in &keys {
             assert!(f.might_contain(k), "false negative for key {k:#x}");

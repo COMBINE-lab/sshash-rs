@@ -404,7 +404,7 @@ impl SequenceIterator {
         // The block ends the immutable borrow of slf.seq before lookup() borrows
         // slf.engine mutably — the two borrows go through the same PyRefMut.
         let kmer_bytes: Vec<u8> = {
-            let s: &SequenceIterator = &*slf;
+            let s: &SequenceIterator = &slf;
             s.seq[s.pos..s.pos + s.k].to_owned()
         };
         let result = slf.engine.lookup(&kmer_bytes);

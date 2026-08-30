@@ -41,19 +41,9 @@ use super::external_sort::{ExternalSorter, MinimizerTupleExternal, GIB};
 /// This is the fundamental unit for indexing. Each tuple represents a
 /// minimizer occurrence in the input and tracks where it appears.
 ///
-/// # Canonical Mode Orientation Handling
-///
-/// In canonical mode, when a k-mer's reverse complement minimizer is smaller
-/// than the forward minimizer, we use the RC minimizer BUT adjust `pos_in_kmer`
-/// to reflect the position in the **forward** k-mer:
-///
-/// ```text
-/// If RC minimizer is chosen:
-///   pos_in_kmer = (k - m) - original_rc_pos
-/// ```
-///
-/// This elegantly encodes orientation implicitly without needing a separate flag.
-/// The minimizer position is always relative to the forward k-mer representation.
+/// The minimizer value is the canonical m-mer at the anchored locus (the
+/// unified scheme), and `pos_in_kmer` is the locus in the forward frame of
+/// the SPSS string; a lookup probes both `pos` and its mirror `k - m - pos`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MinimizerTuple {
     /// The minimizer value (m-mer)
@@ -62,10 +52,8 @@ pub struct MinimizerTuple {
     /// Position of the minimizer in the sequence (in bases from string start)
     pub pos_in_seq: u64,
 
-    /// Position of the minimizer within the k-mer (0 to k-m)
-    ///
-    /// In canonical mode, this is ALWAYS relative to the forward k-mer,
-    /// even when the RC minimizer is chosen (adjusted accordingly).
+    /// The selected locus within the k-mer window (0 to k-m), in the
+    /// forward frame of the stored string.
     pub pos_in_kmer: u8,
 
     /// Number of consecutive k-mers that share this minimizer (super-k-mer size)
@@ -106,7 +94,7 @@ impl Ord for MinimizerTuple {
 /// Compute minimizer tuples from an encoded SPSS (parallelized with rayon)
 ///
 /// This function extracts all k-mers from the SPSS, computes their minimizers
-/// (with canonical mode handling), and produces sorted, coalesced MinimizerTuples.
+/// (the unified canonical scheme), and produces sorted, coalesced MinimizerTuples.
 ///
 /// # Parallelism
 ///
@@ -117,13 +105,6 @@ impl Ord for MinimizerTuple {
 ///
 /// The rayon thread pool size is controlled by the caller (typically
 /// `DictionaryBuilder` installs a pool sized to `config.num_threads`).
-///
-/// # Canonical Mode Orientation
-///
-/// When canonical mode is enabled, for each k-mer we compute both forward and
-/// reverse-complement minimizers. If the RC minimizer is smaller, we use it BUT
-/// adjust the position: `pos_in_kmer = (k - m) - rc_pos`. This ensures pos_in_kmer
-/// always represents the position relative to the forward k-mer.
 ///
 /// # Returns
 ///
@@ -562,9 +543,7 @@ mod tests {
         use crate::builder::config::BuildConfiguration;
         use crate::builder::encode::Encoder;
         
-        // Build SPSS in canonical mode
-        let mut config = BuildConfiguration::new(31, 13).unwrap();
-        config.canonical = true;
+        let config = BuildConfiguration::new(31, 13).unwrap();
         let mut encoder = Encoder::<31>::new();
         
         // Add a sequence

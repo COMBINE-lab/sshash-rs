@@ -130,9 +130,8 @@ fn test_bucket_type_distribution() {
 
 #[test]
 fn test_canonical_mode_pipeline() {
-    // Test with canonical mode enabled
-    let mut config = BuildConfiguration::new(31, 13).unwrap();
-    config.canonical = true;
+    // The index is always canonical (unified scheme)
+    let config = BuildConfiguration::new(31, 13).unwrap();
 
     let mut encoder = Encoder::<31>::new();
     let sequence = b"ACGTACGTACGTACGTACGTACGTACGTACG";

@@ -455,7 +455,7 @@ mod tests {
         let acgt = {
             let mut bits = 0u64;
             for (i, b) in "ACGT".bytes().enumerate() {
-                bits |= ((((b >> 1) & 3) as u64) << (i * 2)) as u64;
+                bits |= (((b >> 1) & 3) as u64) << (i * 2);
             }
             bits
         };

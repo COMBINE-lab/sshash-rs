@@ -1027,7 +1027,7 @@ where
         }
         engine.reset();
         for i in 0..=(seq.len() - k) {
-            let kmer_bytes = seq[i..i + k].as_bytes();
+            let kmer_bytes = &seq.as_bytes()[i..i + k];
             let res = if point {
                 match Kmer::<K>::from_str(&seq[i..i + k]) {
                     Ok(kmer) => dict.query::<K>(&kmer),
