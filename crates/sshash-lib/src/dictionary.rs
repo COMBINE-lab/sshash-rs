@@ -110,24 +110,26 @@ impl Dictionary {
         self.query(kmer).kmer_offset
     }
 
-    /// Alias of [`Self::lookup`]: in the unified canonical index both strands
-    /// are equivalent, so there is no strand-specific lookup to skip.
+    /// Strand-restricted position lookup: the answer is limited to k-mers
+    /// occurring in **forward orientation** in the indexed strings (a match
+    /// found in backward orientation reports not-found). C++ v6
+    /// `lookup(kmer, check_reverse_complement = false)`.
     #[inline]
     pub fn lookup_forward<const K: usize>(&self, kmer: &Kmer<K>) -> u64
     where
         Kmer<K>: KmerBits,
     {
-        self.lookup(kmer)
+        self.query_forward(kmer).kmer_offset
     }
 
-    /// Alias of [`Self::lookup`]; the flag is ignored (the index is canonical,
-    /// matching C++ v6 where the modality no longer exists).
+    /// Position lookup choosing the orientation restriction at runtime
+    /// (mirror of C++ `lookup(kmer, check_reverse_complement)`).
     #[inline]
-    pub fn lookup_checked<const K: usize>(&self, kmer: &Kmer<K>, _check_reverse_complement: bool) -> u64
+    pub fn lookup_checked<const K: usize>(&self, kmer: &Kmer<K>, check_reverse_complement: bool) -> u64
     where
         Kmer<K>: KmerBits,
     {
-        self.lookup(kmer)
+        self.query_checked(kmer, check_reverse_complement).kmer_offset
     }
 
     /// Query a k-mer and return a full [`LookupResult`](crate::streaming_query::LookupResult),
@@ -142,28 +144,39 @@ impl Dictionary {
         self.lookup_with_minimizer(kmer, &kmer_rc, mini, None)
     }
 
-    /// Alias of [`Self::query`]: both strands are equivalent in the canonical
-    /// index (the previous strand-specific behavior existed only for the
-    /// removed non-canonical modality).
+    /// Strand-restricted query: the answer is limited to k-mers occurring in
+    /// **forward orientation** in the indexed strings. The lookup itself is
+    /// the ordinary single probe (a k-mer and its reverse complement share a
+    /// bucket); a match found in backward orientation reports not-found.
+    /// Mirrors C++ v6 `lookup(kmer, check_reverse_complement = false)`.
     #[inline]
     pub fn query_forward<const K: usize>(&self, kmer: &Kmer<K>) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        self.query(kmer)
+        let res = self.query(kmer);
+        if res.is_found() && res.kmer_orientation == -1 {
+            return crate::streaming_query::LookupResult::not_found();
+        }
+        res
     }
 
-    /// Alias of [`Self::query`]; the flag is ignored (the index is canonical).
+    /// Query choosing the orientation restriction at runtime. Mirror of the
+    /// C++ `lookup(kmer, check_reverse_complement)` API.
     #[inline]
     pub fn query_checked<const K: usize>(
         &self,
         kmer: &Kmer<K>,
-        _check_reverse_complement: bool,
+        check_reverse_complement: bool,
     ) -> crate::streaming_query::LookupResult
     where
         Kmer<K>: KmerBits,
     {
-        self.query(kmer)
+        if check_reverse_complement {
+            self.query(kmer)
+        } else {
+            self.query_forward(kmer)
+        }
     }
 
     /// Query a k-mer given as a DNA string.
@@ -221,14 +234,15 @@ impl Dictionary {
         (res.kmer_offset, res.kmer_orientation as i8)
     }
 
-    /// Alias of [`Self::lookup_with_orientation`]: both strands are equivalent
-    /// in the unified canonical index.
+    /// As [`Self::lookup_with_orientation`], restricted to forward-orientation
+    /// matches: an RC-orientation hit reports `(INVALID_UINT64, 1)`.
     #[inline]
     pub fn lookup_forward_with_orientation<const K: usize>(&self, kmer: &Kmer<K>) -> (u64, i8)
     where
         Kmer<K>: KmerBits,
     {
-        self.lookup_with_orientation(kmer)
+        let res = self.query_forward(kmer);
+        (res.kmer_offset, res.kmer_orientation as i8)
     }
 
     // -----------------------------------------------------------------------
@@ -840,11 +854,9 @@ mod tests {
         let rc = fwd.reverse_complement();
         assert_ne!(fwd.bits(), rc.bits(), "k-mer must not be its own RC");
 
-        // Both orientations found through every query entry point.
+        // Both orientations found through the default query.
         assert!(dict.query::<7>(&fwd).is_found());
         assert!(dict.query::<7>(&rc).is_found());
-        assert!(dict.query_forward::<7>(&rc).is_found());
-        assert!(dict.query_checked::<7>(&rc, false).is_found());
 
         // Orientation is reported: forward => +1, reverse => -1, and the
         // matched text position is the same for both strands.
@@ -854,7 +866,16 @@ mod tests {
             dict.query::<7>(&fwd).kmer_offset,
             dict.query::<7>(&rc).kmer_offset
         );
-        assert_ne!(dict.lookup_forward::<7>(&rc), INVALID_UINT64);
+
+        // Forward-restricted queries (C++ v6 check_reverse_complement=false):
+        // the forward-orientation k-mer answers, its RC does not.
+        assert!(dict.query_forward::<7>(&fwd).is_found());
+        assert!(!dict.query_forward::<7>(&rc).is_found());
+        assert!(dict.query_checked::<7>(&rc, true).is_found());
+        assert!(!dict.query_checked::<7>(&rc, false).is_found());
+        assert_ne!(dict.lookup_forward::<7>(&fwd), INVALID_UINT64);
+        assert_eq!(dict.lookup_forward::<7>(&rc), INVALID_UINT64);
+        assert_eq!(dict.lookup_forward_with_orientation::<7>(&rc).0, INVALID_UINT64);
 
         // An absent k-mer (and its RC) is not found, and the minimizer
         // presence flag is meaningful.

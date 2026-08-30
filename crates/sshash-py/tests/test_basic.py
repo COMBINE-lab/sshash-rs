@@ -70,21 +70,24 @@ def test_streaming_equals_point(dct, seqs):
     assert sq.num_extensions > 0
 
 
-def test_forward_only_deprecation(dct, seqs):
+def test_forward_only_restricts_orientation(dct, seqs):
+    # C++ v6 semantics (check_reverse_complement=False): the single-probe
+    # lookup runs as usual, but a match found in backward orientation
+    # reports absent. Forward-orientation k-mers still answer.
     kmer = seqs[0][:K]
+    assert dct.query(kmer, forward_only=True) is not None
+    assert dct.lookup(kmer, forward_only=True) is not None
+    assert dct.contains(kmer, forward_only=True)
+    assert dct.query(rc(kmer), forward_only=True) is None
+    assert dct.lookup(rc(kmer), forward_only=True) is None
+    assert not dct.contains(rc(kmer), forward_only=True)
+    # The unrestricted query still answers both strands.
+    assert dct.query(rc(kmer)) is not None
+    # And forward_only emits no warnings — it is a real, supported option.
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        h = dct.query(kmer, forward_only=True)
-        dct.lookup(kmer, forward_only=True)
-        dct.contains(kmer, forward_only=True)
-    dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
-    assert len(dep) == 3
-    assert "always canonical" in str(dep[0].message)
-    assert h is not None  # flag has no effect on the result
-    # No warning when the flag is not set
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        dct.query(kmer)
+        dct.query(kmer, forward_only=True)
+        dct.query(rc(kmer), forward_only=True)
     assert not [x for x in w if issubclass(x.category, DeprecationWarning)]
 
 

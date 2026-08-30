@@ -264,42 +264,36 @@ impl PyDictionary {
     /// global k-mer ID and full location information use :meth:`query`.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: Deprecated, no effect: the index is always canonical
-    ///     (both strands are equivalent). Accepted for one release; warns if ``True``.
+    /// :param forward_only: If ``True``, restrict the lookup to k-mers
+    ///     occurring in forward orientation in the indexed strings (an
+    ///     RC-orientation match reports absent). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
-    fn lookup(&self, py: Python<'_>, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
-        if forward_only {
-            warn_deprecated(py, c"forward_only has no effect: the index is always canonical")?;
-        }
+    fn lookup(&self, kmer: &str, forward_only: bool) -> PyResult<Option<u64>> {
         self.inner.lookup_str(kmer, forward_only)
     }
 
     /// Return a :class:`Hit` with full location information, or ``None`` if not found.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: Deprecated, no effect: the index is always canonical
-    ///     (both strands are equivalent). Accepted for one release; warns if ``True``.
+    /// :param forward_only: If ``True``, restrict the query to k-mers
+    ///     occurring in forward orientation in the indexed strings (an
+    ///     RC-orientation match reports absent). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
-    fn query(&self, py: Python<'_>, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
-        if forward_only {
-            warn_deprecated(py, c"forward_only has no effect: the index is always canonical")?;
-        }
+    fn query(&self, kmer: &str, forward_only: bool) -> PyResult<Option<Hit>> {
         self.inner.query_str(kmer, forward_only)
     }
 
     /// Return ``True`` if the k-mer is present in the index.
     ///
     /// :param kmer: DNA string of length ``k``.
-    /// :param forward_only: Deprecated, no effect: the index is always canonical
-    ///     (both strands are equivalent). Accepted for one release; warns if ``True``.
+    /// :param forward_only: If ``True``, restrict the membership test to k-mers
+    ///     occurring in forward orientation in the indexed strings (an
+    ///     RC-orientation match reports absent). Defaults to ``False``.
     /// :raises ValueError: If ``kmer`` contains invalid characters or has the wrong length.
     #[pyo3(signature = (kmer, forward_only=false))]
-    fn contains(&self, py: Python<'_>, kmer: &str, forward_only: bool) -> PyResult<bool> {
-        if forward_only {
-            warn_deprecated(py, c"forward_only has no effect: the index is always canonical")?;
-        }
+    fn contains(&self, kmer: &str, forward_only: bool) -> PyResult<bool> {
         self.inner.contains_str(kmer, forward_only)
     }
 

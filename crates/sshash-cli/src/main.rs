@@ -67,8 +67,9 @@ enum Commands {
         #[arg(long, default_value = "false")]
         streaming: bool,
 
-        /// Deprecated, no effect: the index is always canonical, so both
-        /// strands are equivalent (accepted for one release, warns when set)
+        /// Restrict answers to k-mers occurring in forward orientation in the
+        /// indexed strings (an RC-orientation match reports not-found);
+        /// C++ v6 `check_reverse_complement = false`
         #[arg(long, default_value = "false")]
         forward_only: bool,
     },
@@ -566,9 +567,6 @@ fn query_command(index: String, query: String, streaming: bool, forward_only: bo
         return Err(anyhow::anyhow!(
             "--forward-only is not supported with --streaming (the streaming query always checks the reverse complement, matching C++)"
         ));
-    }
-    if forward_only {
-        warn!("--forward-only has no effect: the index is canonical (both strands are equivalent)");
     }
 
     sshash_lib::dispatch_on_k!(k, K => {

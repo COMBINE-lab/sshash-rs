@@ -12,7 +12,13 @@
   at plain forward density — the old canonical mode paid a 4/3 super-kmer
   density factor for the same answers. Regular (non-canonical) mode is
   removed: `BuildConfiguration.canonical` and `Dictionary::canonical()` are
-  deprecated no-ops, CLI `--canonical` warns.
+  deprecated no-ops, CLI `--canonical` warns. The forward-only query family
+  (`query_forward`, `lookup_forward`, `*_checked(…, false)`, CLI
+  `--forward-only`, python `forward_only=`) keeps C++ v6 semantics: the
+  ordinary single-probe lookup runs, and a match found in backward
+  orientation reports not-found — i.e. answers are restricted to k-mers
+  occurring in forward orientation in the indexed strings. (On the old
+  canonical mode the flag was documented as ignored; it is now honored.)
 - **Index format v5.0**: indices built with 0.6.x must be rebuilt. The header
   now records the build seed and a hasher-magic guard (a rapidhash behavior
   change now fails loudly at load instead of silently corrupting minimizer
