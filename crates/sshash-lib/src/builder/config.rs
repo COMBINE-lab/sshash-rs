@@ -34,8 +34,14 @@ pub struct BuildConfiguration {
     #[deprecated(since = "0.7.0", note = "the index is always canonical; this field is ignored")]
     pub canonical: bool,
     
-    /// Use partitioned MPHF for parallel construction (default: true)
+    /// Use partitioned MPHF for parallel construction (default: true).
+    /// Ignored for the minimizer MPHF when `streaming_mphf` is set.
     pub partitioned_mphf: bool,
+
+    /// Build the minimizer MPHF as one function by streaming the minimizers
+    /// (offline for large sets), instead of collecting and partitioning them
+    /// (default: true).
+    pub streaming_mphf: bool,
 
     /// Build weighted dictionary (with k-mer abundance/weights)
     pub weighted: bool,
@@ -65,6 +71,7 @@ impl Default for BuildConfiguration {
             lambda: 6.0,  // C++ default
             canonical: true,
             partitioned_mphf: true,
+            streaming_mphf: true,
             weighted: false,
             verbose: true,
             force_external_sort: false,

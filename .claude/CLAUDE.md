@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-`sshash-rs` is a Rust implementation of **SSHash** — a compressed dictionary for DNA k-mers based on minimal perfect hashing (PHast) and succinct data structures (Elias-Fano, BitFieldVec). It is used as the core k-mer index for `piscem-rs`.
+`sshash-rs` is a Rust implementation of **SSHash** — a compressed dictionary for DNA k-mers based on minimal perfect hashing (sux PHastR) and succinct data structures (Elias-Fano, BitFieldVec). It is used as the core k-mer index for `piscem-rs`.
 
 ## Commands
 
@@ -63,10 +63,10 @@ use mem_dbg::{MemSize, SizeFlags};  // ef.mem_size(SizeFlags::default())
 
 ## Critical Dependency Notes
 
-- **`ph-temp`** is a COMBINE-lab fork of `bsuccinct-rs` that returns `usize::MAX` for out-of-set keys instead of panicking. The commented-out `ph` git dep in `Cargo.toml` is the upstream; use `ph-temp` until merged.
+- **MPHF** is sux's `PHastR` over `KeyBytes` (see `mphf_config.rs`), hashed with rapidhash v3, not sux's default xxh3 (5-15% slower queries). PHastR's output depends on its number of sweep chunks, which defaults to the rayon pool size: always build with a fixed `sweep_chunks` (or on a 1-thread pool) so indices don't depend on `num_threads`. Offline construction must get its directory via `PHastRBuilder::temp_dir`, never `TMPDIR`.
 - **`rapidhash`** (not `ahash`) is used for all index hashing. `ahash` switches algorithms with AES-NI availability, breaking serialized indices across machines. `rapidhash` is CPU-feature independent — indices are portable.
-- **`epserde` version must match `sux`'s version** (both currently `0.12`). Mismatched versions cause deserialization failures.
-- **`sux = { version = "0.12", features = ["epserde"] }`** — the `epserde` feature is required.
+- **`epserde` version must match `sux`'s version** (currently `0.13` for sux `0.15`). Mismatched versions cause deserialization failures; an epserde major bump breaks every serialized index.
+- **`sux = { version = "0.15.2", features = ["epserde"] }`** — the `epserde` feature is required.
 
 ## Serialization Format
 

@@ -1,33 +1,38 @@
 //! Partitioned Minimal Perfect Hash Function
 //!
-//! Wraps multiple PHast MPHFs, one per partition, with hash-based partition
+//! Wraps multiple PHastR MPHFs, one per partition, with hash-based partition
 //! selection matching the C++ `partitioned_phf` design. Keys are assigned to
-//! partitions via Lemire fast-range reduction on an independent rapidhash,
-//! and each partition's MPHF is built independently (in parallel via rayon).
+//! partitions via Lemire fast-range reduction on an independently seeded
+//! rapidhash, and each partition's MPHF is built independently (in parallel via
+//! rayon).
 //!
 //! For datasets with fewer than `AVG_PARTITION_SIZE` keys (including all our
 //! test indices), only a single partition is created and the `get()` fast path
 //! skips the partition hash entirely.
 
-use crate::mphf_config::{Mphf, MphfHasher, build_mphf_from_vec, mphf_hasher, read_mphf};
+use crate::mphf_config::{
+    KeyBytes, Mphf, MphfKey, build_mphf, build_mphf_streaming, build_mphfs, hash_key_bytes, mphf_get,
+    mphf_serialized_bytes,
+    read_mphf, write_mphf,
+};
 use rayon::prelude::*;
-use std::hash::Hash;
+use std::borrow::Borrow;
 use std::io::{self, Read, Write};
 
 /// Average number of keys per partition, matching C++ PTHash `partitioned_phf`.
 const AVG_PARTITION_SIZE: usize = 3_000_000;
 
-/// Seed used for partition selection, chosen to differ from PHast's internal
-/// seeds (0, 1, 2, ...) to ensure statistical independence.
+/// Seed used for partition selection, chosen to differ from the hash seeds
+/// PHastR derives from its own seed (0) to ensure statistical independence.
 const PARTITION_HASH_SEED: u64 = 0xC6A4_A793_5BD1_E995;
 
 /// A partitioned minimal perfect hash function.
 ///
 /// Splits keys into partitions by hash range (Lemire fast-range reduction),
-/// builds one PHast MPHF per partition, and routes queries transparently.
+/// builds one PHastR MPHF per partition, and routes queries transparently.
 /// Global indices are `offsets[partition] + inner_mphf.get(key)`.
 pub struct PartitionedMphf {
-    /// One PHast MPHF per partition.
+    /// One PHastR MPHF per partition.
     inners: Vec<Mphf>,
     /// Cumulative key counts: `offsets[i]` = total keys in partitions 0..i.
     /// Length = `num_partitions + 1`.
@@ -36,8 +41,6 @@ pub struct PartitionedMphf {
     num_partitions: u32,
     /// Total number of keys across all partitions.
     num_keys: usize,
-    /// Hasher for partition selection.
-    hasher: MphfHasher,
 }
 
 impl PartitionedMphf {
@@ -46,7 +49,27 @@ impl PartitionedMphf {
     /// If `partitioned` is false (or there are fewer than `AVG_PARTITION_SIZE`
     /// keys), a single partition is used — equivalent to a monolithic MPHF with
     /// zero query overhead.
-    pub fn build_from_vec<K: Hash + Clone + Send + Sync>(keys: Vec<K>, partitioned: bool) -> Self {
+    pub fn build_from_vec<K: MphfKey>(keys: Vec<K>, partitioned: bool) -> Self {
+        Self::build_from_slice(&keys, partitioned)
+    }
+
+    /// Build a single-partition MPHF by streaming distinct keys, read once
+    /// (see [`build_mphf_streaming`]). `num_keys_hint` selects offline
+    /// construction for large key sets; `tmp_dir` holds its temporary files.
+    pub fn build_streaming<I>(keys: I, num_keys_hint: usize, tmp_dir: &std::path::Path) -> Self
+    where
+        I: Iterator<Item: MphfKey> + Send,
+    {
+        let mphf = build_mphf_streaming(keys, num_keys_hint, tmp_dir);
+        let num_keys = mphf.len();
+        if num_keys == 0 {
+            return Self { inners: Vec::new(), offsets: vec![0], num_partitions: 0, num_keys: 0 };
+        }
+        Self { inners: vec![mphf], offsets: vec![0, num_keys], num_partitions: 1, num_keys }
+    }
+
+    /// Build a partitioned MPHF from a slice of keys.
+    pub fn build_from_slice<K: MphfKey>(keys: &[K], partitioned: bool) -> Self {
         let num_keys = keys.len();
         if num_keys == 0 {
             return Self {
@@ -54,7 +77,6 @@ impl PartitionedMphf {
                 offsets: vec![0],
                 num_partitions: 0,
                 num_keys: 0,
-                hasher: mphf_hasher(),
             };
         }
 
@@ -66,26 +88,45 @@ impl PartitionedMphf {
 
         if num_partitions == 1 {
             // Single partition: build directly, no partitioning overhead
-            let mphf = build_mphf_from_vec(keys);
+            let bytes: Vec<K::Bytes> = keys.iter().map(|k| k.key_bytes()).collect();
+            let mphf = build_mphf(&bytes);
             return Self {
                 inners: vec![mphf],
                 offsets: vec![0, num_keys],
                 num_partitions: 1,
                 num_keys,
-                hasher: mphf_hasher(),
             };
         }
 
-        // Multi-partition: hash-and-partition
-        let hasher = mphf_hasher();
-        let np = num_partitions as u128;
+        // Multi-partition: hash-and-partition.
+        // Count partition sizes first (in parallel) so each partition is
+        // allocated exactly, instead of carrying up to 2x growth slack.
+        let np = num_partitions as u32;
+        let sizes = keys
+            .par_chunks(1 << 16)
+            .fold(
+                || vec![0usize; num_partitions],
+                |mut counts, chunk| {
+                    for &key in chunk {
+                        counts[partition_of(key.key_bytes().borrow(), np)] += 1;
+                    }
+                    counts
+                },
+            )
+            .reduce(
+                || vec![0usize; num_partitions],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
+                    a
+                },
+            );
 
-        // Assign keys to partitions
-        let mut partition_keys: Vec<Vec<K>> = (0..num_partitions).map(|_| Vec::new()).collect();
-        for key in keys {
-            let hash = hasher.hash_one_with_seed(&key, PARTITION_HASH_SEED);
-            let p = ((hash as u128 * np) >> 64) as usize;
-            partition_keys[p].push(key);
+        // Assign keys to partitions (in input order)
+        let mut partition_keys: Vec<Vec<K::Bytes>> =
+            sizes.iter().map(|&s| Vec::with_capacity(s)).collect();
+        for &key in keys {
+            let bytes = key.key_bytes();
+            partition_keys[partition_of(bytes.borrow(), np)].push(bytes);
         }
 
         // Compute cumulative offsets
@@ -96,50 +137,36 @@ impl PartitionedMphf {
             offsets.push(prev + pk.len());
         }
 
-        // Build inner MPHFs in parallel (each single-threaded internally)
-        let inners: Vec<Mphf> = partition_keys
-            .into_par_iter()
-            .map(|pk| {
-                if pk.is_empty() {
-                    // Empty partition — build a trivial MPHF from empty vec
-                    build_mphf_from_vec(pk)
-                } else {
-                    build_mphf_from_vec(pk)
-                }
-            })
-            .collect();
+        // Build inner MPHFs, current_num_threads() at a time (each
+        // single-threaded internally), freeing each partition's keys as it
+        // is built
+        let inners = build_mphfs(partition_keys);
 
         Self {
             inners,
             offsets,
             num_partitions: num_partitions as u32,
             num_keys,
-            hasher,
         }
-    }
-
-    /// Build a partitioned MPHF from a slice of keys (clones into Vec).
-    pub fn build_from_slice<K: Hash + Clone + Send + Sync>(keys: &[K], partitioned: bool) -> Self {
-        Self::build_from_vec(keys.to_vec(), partitioned)
     }
 
     /// Look up a key and return its global index in [0, num_keys).
     ///
-    /// For keys NOT in the build set, returns `num_keys` (out-of-range sentinel).
-    /// The COMBINE-lab ph fork returns `usize::MAX` for keys that exhaust all
-    /// levels without matching, which we map to `num_keys`.
+    /// For keys NOT in the build set, the result is arbitrary: PHastR maps every
+    /// key into range, so callers must verify the key at the returned index.
+    /// An empty MPHF returns `num_keys` (0), i.e., out of range.
     #[inline]
-    pub fn get<K: Hash + ?Sized>(&self, key: &K) -> usize {
+    pub fn get<K: MphfKey>(&self, key: &K) -> usize {
         if self.num_partitions == 1 {
             // Fast path: skip partition hash entirely.
-            let idx = self.inners[0].get(key);
-            if idx == usize::MAX { return self.num_keys; }
-            return idx;
+            return mphf_get(&self.inners[0], *key);
         }
-        let p = self.partition_for(key);
-        let idx = self.inners[p].get(key);
-        if idx == usize::MAX { return self.num_keys; }
-        self.offsets[p] + idx
+        if self.num_partitions == 0 {
+            return self.num_keys;
+        }
+        let bytes = key.key_bytes();
+        let p = partition_of(bytes.borrow(), self.num_partitions);
+        self.offsets[p] + self.inners[p].get(bytes.borrow())
     }
 
     /// Total number of keys.
@@ -150,13 +177,6 @@ impl PartitionedMphf {
     /// Number of partitions.
     pub fn num_partitions(&self) -> u32 {
         self.num_partitions
-    }
-
-    /// Compute which partition a key belongs to (Lemire fast-range reduction).
-    #[inline]
-    fn partition_for<K: Hash + ?Sized>(&self, key: &K) -> usize {
-        let hash = self.hasher.hash_one_with_seed(key, PARTITION_HASH_SEED);
-        ((hash as u128 * self.num_partitions as u128) >> 64) as usize
     }
 
     /// Serialize to a writer.
@@ -172,7 +192,7 @@ impl PartitionedMphf {
 
         // Inner MPHFs
         for mphf in &self.inners {
-            mphf.write(writer)?;
+            write_mphf(mphf, writer)?;
         }
 
         Ok(())
@@ -206,36 +226,24 @@ impl PartitionedMphf {
             offsets,
             num_partitions,
             num_keys,
-            hasher: mphf_hasher(),
         })
     }
 
-    /// Estimate serialized byte size (for container offset table pre-allocation).
+    /// Exact serialized byte size (as written by [`Self::write_to`]).
     pub fn write_bytes(&self) -> usize {
         let header = 4 + 8; // num_partitions + num_keys
         let offsets = (self.offsets.len()) * 8;
-        let mphfs: usize = self.inners.iter().map(|m| m.write_bytes()).sum();
+        let mphfs: usize = self.inners.iter().map(mphf_serialized_bytes).sum();
         header + offsets + mphfs
     }
 }
 
-/// Extension trait to hash with a specific seed.
-///
-/// PHast's `BuildRapidHash` implements `BuildSeededHasher`, so we use
-/// `build_hasher(seed)` to get a seeded hasher for partition selection.
-trait HashOneWithSeed {
-    fn hash_one_with_seed<K: Hash + ?Sized>(&self, key: &K, seed: u64) -> u64;
-}
-
-impl HashOneWithSeed for MphfHasher {
-    #[inline]
-    fn hash_one_with_seed<K: Hash + ?Sized>(&self, key: &K, seed: u64) -> u64 {
-        use ph::BuildSeededHasher;
-        use std::hash::Hasher;
-        let mut hasher = self.build_hasher(seed);
-        key.hash(&mut hasher);
-        hasher.finish()
-    }
+/// Compute which partition a key belongs to (Lemire fast-range reduction on
+/// a rapidhash seeded independently of the per-partition MPHFs).
+#[inline]
+fn partition_of(key: &KeyBytes, num_partitions: u32) -> usize {
+    let hash = hash_key_bytes(key.as_bytes(), PARTITION_HASH_SEED);
+    ((hash as u128 * num_partitions as u128) >> 64) as usize
 }
 
 #[cfg(test)]
@@ -312,6 +320,105 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_partition_bijection_and_roundtrip() {
+        // Just over two partitions' worth of scattered keys
+        let n = 2 * AVG_PARTITION_SIZE + 12_345;
+        let keys: Vec<u64> = (0..n as u64).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).collect();
+        let pmphf = PartitionedMphf::build_from_vec(keys.clone(), true);
+        assert_eq!(pmphf.num_partitions(), 3);
+        assert_eq!(pmphf.num_keys(), n);
+
+        let mut seen = vec![false; n];
+        for k in &keys {
+            let i = pmphf.get(k);
+            assert!(!seen[i], "index {i} assigned twice");
+            seen[i] = true;
+        }
+
+        let mut buf = Vec::new();
+        pmphf.write_to(&mut buf).unwrap();
+        assert_eq!(buf.len(), pmphf.write_bytes());
+        let pmphf2 = PartitionedMphf::read_from(&mut buf.as_slice()).unwrap();
+        for k in keys.iter().step_by(97) {
+            assert_eq!(pmphf.get(k), pmphf2.get(k));
+        }
+        // Absent keys still land in range
+        for k in 0..1000u64 {
+            assert!(pmphf.get(&(k | (1 << 63))) < n);
+        }
+    }
+
+    #[test]
+    fn test_u128_keys() {
+        let keys: Vec<u128> = (0..5000u128).map(|i| (i << 70) | i).collect();
+        let pmphf = PartitionedMphf::build_from_vec(keys.clone(), false);
+        let mut indices: Vec<usize> = keys.iter().map(|k| pmphf.get(k)).collect();
+        indices.sort_unstable();
+        indices.dedup();
+        assert_eq!(indices.len(), keys.len());
+    }
+
+    #[test]
+    fn test_build_independent_of_thread_count() {
+        // Large enough that PHastR would split its sweep across threads
+        let keys: Vec<u64> = (0..2_000_000u64).map(|i| i.wrapping_mul(0xD6E8_FEB8_6659_FD93)).collect();
+        let bytes_with = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pmphf = pool.install(|| PartitionedMphf::build_from_slice(&keys, false));
+            let mut buf = Vec::new();
+            pmphf.write_to(&mut buf).unwrap();
+            buf
+        };
+        assert_eq!(bytes_with(1), bytes_with(8));
+    }
+
+    #[test]
+    fn test_partitioned_build_independent_of_thread_count() {
+        let n = 2 * AVG_PARTITION_SIZE + 999;
+        let keys: Vec<u64> = (0..n as u64).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).collect();
+        let bytes_with = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pmphf = pool.install(|| PartitionedMphf::build_from_slice(&keys, true));
+            let mut buf = Vec::new();
+            pmphf.write_to(&mut buf).unwrap();
+            buf
+        };
+        assert_eq!(bytes_with(1), bytes_with(8));
+    }
+
+    fn streamed_bytes(keys: &[u64], ambient_threads: usize, hint: usize) -> Vec<u8> {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(ambient_threads).build().unwrap();
+        let pmphf = pool.install(|| PartitionedMphf::build_streaming(keys.iter().copied(), hint, tmp.path()));
+        assert_eq!(pmphf.num_keys(), keys.len());
+        let mut seen = vec![false; keys.len()];
+        for k in keys {
+            let i = pmphf.get(k);
+            assert!(!seen[i]);
+            seen[i] = true;
+        }
+        let mut buf = Vec::new();
+        pmphf.write_to(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn test_streaming_build_independent_of_thread_count() {
+        // Large enough that PHastR splits its sweep across its pool's threads
+        let keys: Vec<u64> = (0..2_000_000u64).map(|i| i.wrapping_mul(0xD6E8_FEB8_6659_FD93)).collect();
+        assert_eq!(streamed_bytes(&keys, 1, keys.len()), streamed_bytes(&keys, 16, keys.len()));
+    }
+
+    #[test]
+    #[ignore = "builds over OFFLINE_MIN_KEYS keys (256 MiB buffers); run explicitly"]
+    fn test_streaming_offline_matches_in_memory() {
+        let n = crate::mphf_config::OFFLINE_MIN_KEYS;
+        let keys: Vec<u64> = (0..n as u64).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15)).collect();
+        // Same keys, same pool size: offline mode must not change the function
+        assert_eq!(streamed_bytes(&keys, 4, n), streamed_bytes(&keys, 4, 0));
+    }
+
+    #[test]
     fn test_write_bytes_sanity() {
         let keys: Vec<u64> = (0..100).collect();
         let pmphf = PartitionedMphf::build_from_vec(keys, true);
@@ -319,15 +426,6 @@ mod tests {
         let mut buf = Vec::new();
         pmphf.write_to(&mut buf).unwrap();
 
-        // write_bytes() is an estimate (PHast's write_bytes() is approximate)
-        // Just verify it's in a reasonable range
-        let actual = buf.len();
-        let estimate = pmphf.write_bytes();
-        assert!(estimate > 0, "estimate should be positive");
-        // The estimate comes from PHast's write_bytes() which may not be exact
-        assert!(
-            actual > 0 && estimate > 0,
-            "both actual ({actual}) and estimate ({estimate}) should be positive"
-        );
+        assert_eq!(buf.len(), pmphf.write_bytes());
     }
 }

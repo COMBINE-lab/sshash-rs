@@ -245,7 +245,31 @@ impl DictionaryBuilder {
         &self,
         file_tuples: &FileTuples,
     ) -> Result<(BucketMetadata, MinimizersControlMap, Vec<usize>), String> {
-        // --- Pass A: Write minimizers to temp file, mmap it, build MPHF ---
+        // --- Pass A (streaming): feed the minimizers straight into the MPHF ---
+        let mphf = if self.config.streaming_mphf {
+            let bucket_iter = file_tuples.bucket_iter()
+                .map_err(|e| format!("Failed to open file for pass A: {e}"))?;
+            info!("Building PHastR MPHF for {} tuples' minimizers (streaming)", file_tuples.num_tuples());
+            // The tuple count bounds the bucket count: it only selects
+            // offline construction for large inputs.
+            Some(PartitionedMphf::build_streaming(
+                bucket_iter.map(|scan| scan.minimizer),
+                file_tuples.num_tuples(),
+                &self.config.tmp_dirname,
+            ))
+        } else {
+            None
+        };
+        let mphf = match mphf { Some(m) => m, None => self.build_mphf_via_minimizers_file(file_tuples)? };
+        let num_buckets = mphf.num_keys();
+
+        // --- Pass B: Rescan file → build bucket_id_by_mphf_index + cached_sizes ---
+        self.scan_pass_b(file_tuples, mphf, num_buckets)
+    }
+
+    /// Pass A (non-streaming): write minimizers to a temp file, mmap it, and
+    /// build a partitioned MPHF from the mapped slice.
+    fn build_mphf_via_minimizers_file(&self, file_tuples: &FileTuples) -> Result<PartitionedMphf, String> {
         let minimizers_path = file_tuples.path().with_extension("minimizers.tmp");
         let mut num_buckets = 0usize;
         {
@@ -261,7 +285,7 @@ impl DictionaryBuilder {
             }
             writer.flush().map_err(|e| format!("Failed to flush minimizers: {e}"))?;
         }
-        // Mmap the minimizers file as a &[u64] slice for PHast
+        // Mmap the minimizers file as a &[u64] slice for the MPHF
         let min_file = std::fs::File::open(&minimizers_path)
             .map_err(|e| format!("Failed to open minimizers file: {e}"))?;
         let min_mmap = unsafe { memmap2::Mmap::map(&min_file) }
@@ -273,7 +297,7 @@ impl DictionaryBuilder {
             std::slice::from_raw_parts(min_mmap.as_ptr() as *const u64, num_buckets)
         };
         // Build MPHF from the mmap'd slice — no heap allocation for keys
-        info!("Building PHast MPHF for {} minimizers (partitioned={})",
+        info!("Building PHastR MPHF for {} minimizers (partitioned={})",
             num_buckets, self.config.partitioned_mphf);
         let mphf = PartitionedMphf::build_from_slice(minimizers_slice, self.config.partitioned_mphf);
 
@@ -281,8 +305,16 @@ impl DictionaryBuilder {
         drop(min_mmap);
         drop(min_file);
         let _ = std::fs::remove_file(&minimizers_path);
+        Ok(mphf)
+    }
 
-        // --- Pass B: Rescan file → build bucket_id_by_mphf_index + cached_sizes ---
+    /// Pass B: rescan the file → build bucket_id_by_mphf_index + cached_sizes.
+    fn scan_pass_b(
+        &self,
+        file_tuples: &FileTuples,
+        mphf: PartitionedMphf,
+        num_buckets: usize,
+    ) -> Result<(BucketMetadata, MinimizersControlMap, Vec<usize>), String> {
         let mut cached_sizes: Vec<u32> = Vec::with_capacity(num_buckets);
         let mut bucket_id_by_mphf_index = vec![0usize; num_buckets];
         let mut num_singleton = 0u64;
@@ -381,6 +413,26 @@ impl DictionaryBuilder {
     /// Returns the control map AND a mapping from MPHF index to bucket_id
     /// for reordering control_codewords to MPHF order.
     fn build_control_map(&self, classified: &ClassifiedBuckets) -> Result<(crate::minimizers_control_map::MinimizersControlMap, Vec<usize>), String> {
+        let num_buckets = classified.num_buckets();
+        if self.config.streaming_mphf && num_buckets > 0 {
+            // Bucket refs hold one entry per minimizer (they come from sorted
+            // tuples), and a bucket's id is its index, so stream the
+            // minimizers straight into the MPHF: no key copy, no
+            // minimizer → bucket map.
+            info!("Building PHastR MPHF for {} minimizers (streaming)", num_buckets);
+            let mphf = PartitionedMphf::build_streaming(
+                classified.bucket_refs.iter().map(|b| b.minimizer),
+                num_buckets,
+                &self.config.tmp_dirname,
+            );
+            let mut bucket_id_by_mphf_index = vec![0usize; num_buckets];
+            for (bucket_id, bref) in classified.bucket_refs.iter().enumerate() {
+                bucket_id_by_mphf_index[mphf.get(&bref.minimizer)] = bucket_id;
+            }
+            let control_map = MinimizersControlMap::from_mphf(mphf, num_buckets as u64);
+            return Ok((control_map, bucket_id_by_mphf_index));
+        }
+
         let mut builder = MinimizersControlMapBuilder::new();
 
         for (bucket_id, bref) in classified.bucket_refs.iter().enumerate() {

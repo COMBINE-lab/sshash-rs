@@ -22,7 +22,7 @@ use crate::constants::{ceil_log2, MIN_L, MAX_L, INVALID_UINT64};
 use crate::kmer::{Kmer, KmerBits};
 use crate::partitioned_mphf::PartitionedMphf;
 use crate::offsets::EliasFanoOffsets;
-use std::hash::Hash;
+use crate::mphf_config::MphfKey;
 use sux::bits::bit_field_vec::BitFieldVec;
 use tracing::info;
 use value_traits::slices::{SliceByValue, SliceByValueMut};
@@ -690,7 +690,7 @@ impl SkewIndex {
     ///
     /// # Returns
     /// The within-bucket super-kmer index, or INVALID_UINT64 if not found
-    pub fn lookup<T: Hash>(&self, kmer_value: &T, log2_bucket_size: usize) -> u64 {
+    pub fn lookup<T: MphfKey>(&self, kmer_value: &T, log2_bucket_size: usize) -> u64 {
         if log2_bucket_size <= MIN_L {
             return INVALID_UINT64;
         }
@@ -772,7 +772,7 @@ impl SkewIndex {
 /// Generic over the key type (`u64` for K <= 31, `u128` for K > 31).
 /// Skew index partitions are typically small enough that a single (non-partitioned)
 /// MPHF is used — partitioning is only relevant for the main minimizer MPHF.
-fn build_partition_mphf<T: Hash + Clone + Sync + Send>(kmers: &[T]) -> Option<PartitionedMphf> {
+fn build_partition_mphf<T: MphfKey>(kmers: &[T]) -> Option<PartitionedMphf> {
     if kmers.is_empty() {
         return None;
     }

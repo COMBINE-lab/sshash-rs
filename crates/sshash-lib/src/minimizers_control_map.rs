@@ -128,7 +128,7 @@ impl MinimizersControlMapBuilder {
         let controls = self.controls;
         let num_keys = minimizers.len() as u64;
 
-        info!("Building PHast MPHF for {} minimizers (partitioned={})", num_keys, partitioned);
+        info!("Building PHastR MPHF for {} minimizers (partitioned={})", num_keys, partitioned);
 
         // Build the MPHF using PartitionedMphf
         let mphf = PartitionedMphf::build_from_vec(minimizers.clone(), partitioned);
@@ -166,7 +166,7 @@ impl Default for MinimizersControlMapBuilder {
 /// a minimal perfect hash function for O(1) lookups.
 /// After reordering, the MPHF index IS the index into control_codewords.
 pub struct MinimizersControlMap {
-    /// MPHF for minimizer lookup (partitioned PHast)
+    /// MPHF for minimizer lookup (partitioned PHastR)
     mphf: Option<PartitionedMphf>,
     /// Number of keys in the MPHF
     num_keys: u64,
@@ -235,16 +235,9 @@ impl MinimizersControlMap {
         self.num_keys
     }
 
-    /// Get memory usage in bits (approximation)
+    /// Size of the MPHF in bits (its serialized size)
     pub fn num_bits(&self) -> u64 {
-        
-        
-        if let Some(ref _mphf) = self.mphf {
-            // Estimate: fmph uses ~3.5-4 bits per key typically
-            (self.num_keys as f64 * 4.0) as u64
-        } else {
-            0
-        }
+        self.mphf_serialized_bytes() as u64 * 8
     }
 
     /// Exact serialized byte size of the main MPHF

@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **MPHF is now sux's `PHastR`** (sux 0.15.2) instead of `ph`'s PHast
+  (`ph-temp`), which is no longer a dependency. Keys are hashed with
+  rapidhash v3 through a key-type-erased `KeyBytes` wrapper.
+- **Index format v6.0, MPHF container v3.0**: indices built with 0.7.x must
+  be rebuilt. sux 0.15 also moves to epserde 0.13, whose serialized format
+  is incompatible with 0.12.
+- Dependencies: sux 0.14 → 0.15.2, epserde 0.12 → 0.13, value-traits
+  0.2 → 0.3. Key types of `SkewIndex::lookup` and `KmerBits::Storage` are
+  now bound by `MphfKey` instead of `Hash`.
+
+### Performance
+
+- The minimizer MPHF is built as one function by streaming the minimizers
+  into PHastR (`BuildConfiguration.streaming_mphf`, on by default), offline
+  in `tmp_dirname` from 2^24 minimizers on (16 bytes/key of disk, about
+  0.26 GB of memory for 178M minimizers). This also drops the
+  minimizer → bucket hash map. Human (178M minimizers, 32 threads, via
+  piscem): build 149.6 s → 105.7 s, peak RSS 26.7 GB → 18.7 GB,
+  `.ssi.mphf` 59.5 MB → 54.4 MB. Mapping speed is unchanged.
+- Partitioned MPHF construction (`streaming_mphf = false`) builds at most
+  `num_threads` partitions at a time, each in exactly sized memory.
+
+### Fixes
+
+- Indices are byte-identical whatever `num_threads` they are built with:
+  the streamed minimizer MPHF is built with 8 PHastR sweep chunks, and the
+  other MPHFs on single-thread pools.
+- `MinimizersControlMap::num_bits` reports the MPHF's actual size instead of
+  a 4 bits/key estimate.
+
 ## [0.7.1] - 2026-08-30
 
 ### Fixes
