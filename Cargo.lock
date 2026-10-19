@@ -1453,7 +1453,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "sshash"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "sshash-lib"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dsi-progress-logger",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "tiny-dict"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "hashbrown 0.17.1",

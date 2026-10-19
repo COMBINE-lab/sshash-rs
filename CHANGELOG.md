@@ -1,15 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - unreleased
 
 ### Breaking Changes
 
 - **MPHF is now sux's `PHastR`** (sux 0.15.2) instead of `ph`'s PHast
   (`ph-temp`), which is no longer a dependency. Keys are hashed with
   rapidhash v3 through a key-type-erased `KeyBytes` wrapper.
-- **Index format v6.0, MPHF container v3.0**: indices built with 0.7.x must
-  be rebuilt. sux 0.15 also moves to epserde 0.13, whose serialized format
-  is incompatible with 0.12.
+- **Index format v6.0, MPHF container v3.0**: indices built with 0.7.x or
+  earlier must be rebuilt. sux 0.15 also moves to epserde 0.13, whose
+  serialized format is incompatible with 0.12.
 - Dependencies: sux 0.14 → 0.15.2, epserde 0.12 → 0.13, value-traits
   0.2 → 0.3. Key types of `SkewIndex::lookup` and `KmerBits::Storage` are
   now bound by `MphfKey` instead of `Hash`.
