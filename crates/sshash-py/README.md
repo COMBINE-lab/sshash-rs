@@ -10,6 +10,18 @@ sshash stores a set of k-mers (strings of length *k* over {A, C, G, T}) compactl
 pip install sshash
 ```
 
+## Index compatibility
+
+Version 0.5 is built on sshash-rs 0.8, which changed the index format (index
+format 6.0, MPHF container 3.0). Indexes built with sshash 0.4 or earlier must
+be rebuilt; loading one fails with a "must be rebuilt" error. Indexes are
+always canonical: a k-mer and its reverse complement share one entry
+(`BuildConfig.canonical` is deprecated and ignored).
+
+Building a large index (2^24 minimizers or more) writes temporary files, 16
+bytes per minimizer, to `BuildConfig.tmp_dir` (default `sshash_tmp` in the
+current directory); point it at a scratch disk if needed.
+
 ## Building an index
 
 ### From a FASTA/FASTQ file
@@ -18,8 +30,8 @@ pip install sshash
 import sshash
 
 config = sshash.BuildConfig(k=31, m=19)
-config.canonical = True   # k-mer and its reverse complement map to the same entry
 config.threads = 8        # parallel build (0 = all cores)
+config.tmp_dir = "/scratch/tmp"  # temporary files for large builds
 config.verbose = False
 
 dict = config.build_from_file("sequences.fa.gz")
