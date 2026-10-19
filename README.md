@@ -50,9 +50,27 @@ sshash build --input sequences.fa.gz --k 31 --m 20 --output index
 # From SPSS format (one unitig per line)
 sshash build --input unitigs.spss --k 31 --m 20 --output index
 
+# Temporary files (external sort, offline MPHF construction) on a scratch disk
+sshash build --input sequences.fa.gz --k 31 --m 20 --output index --tmp-dir /scratch/tmp
+
 # The index is always canonical (a k-mer and its reverse complement share
 # one entry, and lookups report orientation); there is no modality flag.
 ```
+
+The minimizer MPHF is built as one function by streaming the sorted
+minimizers (`--mphf streaming`, the default); for large references (2^24
+minimizers or more) its construction records go to `--tmp-dir`, 16 bytes per
+minimizer, keeping memory flat. `--mphf-offline always|never` overrides that
+choice, `--mphf in-memory` builds the single function from a copy of the
+minimizers (no temporary disk), and `--mphf partitioned` builds ~3M-key
+functions in parallel (no temporary disk; minimizer lookups ~25% slower). All
+produce the same index format, and every index is byte-identical whatever
+`--threads` it was built with. In the library these are
+`BuildConfiguration::mphf_build` (`MphfBuild`, `Offline`) and
+`BuildConfiguration::tmp_dirname`.
+
+Building a human index (178M minimizers, 32 threads) takes about 15 s and
+7.2 GB of memory with the default.
 
 ### Query k-mers
 
@@ -129,8 +147,7 @@ crates/
 
 | Crate | Purpose |
 |-------|---------|
-| [`ph`](https://github.com/beling/bsuccinct-rs) | PHast minimal perfect hash functions |
-| [`sux`](https://crates.io/crates/sux) | `BitFieldVec` compact bitvectors |
+| [`sux`](https://crates.io/crates/sux) | PHastR minimal perfect hash functions, `BitFieldVec`, Elias-Fano |
 | [`needletail`](https://crates.io/crates/needletail) | FASTA/FASTQ parsing |
 | [`rayon`](https://crates.io/crates/rayon) | Parallel sorting during build |
 

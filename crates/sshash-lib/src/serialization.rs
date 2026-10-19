@@ -27,7 +27,7 @@
 //!   ├─ MphfPartitionEntry 1
 //!   └─ ...
 //! Data Section (variable length):
-//!   ├─ MPHF partition 0 (raw fmph::GOFunction serialization)
+//!   ├─ MPHF partition 0 (PartitionedMphf of ε-serde PHastR functions)
 //!   ├─ MPHF partition 1
 //!   └─ ...
 //! ```
@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 /// Magic bytes for the SSHash index format
 const MAGIC: &[u8; 8] = b"SSHIDX01";
 
-/// Magic bytes for the SSHash MPHF container format (v2: PartitionedMphf)
+/// Magic bytes for the SSHash MPHF container format (v2+: PartitionedMphf)
 const MPHF_MAGIC: &[u8; 8] = b"SSHIMH02";
 
 /// File format version: (major, minor)
@@ -64,8 +64,15 @@ const MPHF_MAGIC: &[u8; 8] = b"SSHIMH02";
 ///   sshash-rs 0.7): canonical m-mer at forward density with the
 ///   centre-closest tie-break; header gains `seed` and `hasher_magic`;
 ///   the canonical flag is always 1.
-const FORMAT_VERSION: (u32, u32) = (5, 0);
-const MPHF_FORMAT_VERSION: (u32, u32) = (2, 0);
+/// - (6, 0): bucket order follows a sux PHastR MPHF (sux 0.15), so the
+///   `.ssi` is only valid with an MPHF container of version 3.
+const FORMAT_VERSION: (u32, u32) = (6, 0);
+/// MPHF container version.
+///
+/// History:
+/// - (2, 0): PartitionedMphf of `ph` PHast functions
+/// - (3, 0): PartitionedMphf of ε-serde sux PHastR functions
+const MPHF_FORMAT_VERSION: (u32, u32) = (3, 0);
 
 /// Header for the serialized Dictionary
 #[derive(Clone, Debug)]
@@ -172,7 +179,7 @@ impl DictionarySerializationHeader {
         if canonical_bytes[0] == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Invalid header: format 5.0 indexes are always canonical",
+                "Invalid header: format 5.0+ indexes are always canonical",
             ));
         }
 
@@ -466,7 +473,7 @@ pub fn write_mphf_container<W: Write + Seek>(
 
 /// Read PartitionedMphfs from a container format
 ///
-/// Returns a vector of Option<PartitionedMphf> indexed by partition ID
+/// Returns a vector of `Option<PartitionedMphf>` indexed by partition ID
 pub fn read_mphf_container<R: Read + Seek>(
     reader: &mut R,
 ) -> io::Result<Vec<Option<crate::partitioned_mphf::PartitionedMphf>>> {

@@ -30,7 +30,8 @@ pub use minimizer::{
     MinimizerInfo, MinimizerIterator, canonical_mmer_at, compute_minimizer, is_self_rc_mmer,
     reverse_complement_mmer,
 };
-pub use minimizers_control_map::{MinimizersControlMap, MinimizersControlMapBuilder, BucketType};
+pub use minimizers_control_map::MinimizersControlMap;
+pub use mphf_config::{MphfBuild, Offline};
 pub use streaming_query::{LookupResult, StreamingQuery};
 pub use dictionary::Dictionary;
 pub use kmer_dict_trait::{KmerDictionary, KmerStreamingQuery};

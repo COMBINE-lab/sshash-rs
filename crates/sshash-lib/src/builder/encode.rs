@@ -128,6 +128,77 @@ where
     }
 }
 
+/// Encode `sequences` into an SPSS in parallel: the same SPSS as adding each
+/// sequence, in order, to an [`Encoder`] (sequences shorter than `K` are
+/// skipped), built from an exactly sized buffer.
+///
+/// Strings are packed contiguously, so the (at most two) bytes a string
+/// shares with its neighbors are or-ed in atomically; every other byte
+/// belongs to one string and is stored once.
+///
+/// # Errors
+///
+/// On an invalid base, reports the first sequence that contains one.
+pub fn encode_sequences_parallel<const K: usize>(
+    sequences: &[String],
+    m: usize,
+) -> std::result::Result<SpectrumPreservingStringSet, String>
+where
+    Kmer<K>: KmerBits,
+{
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
+
+    let kept: Vec<u32> = (0..sequences.len() as u32)
+        .filter(|&i| sequences[i as usize].len() >= K)
+        .collect();
+    let mut offsets = OffsetsVector::new();
+    let mut total_bases = 0u64;
+    for &i in &kept {
+        total_bases += sequences[i as usize].len() as u64;
+        offsets.push(total_bases);
+    }
+    let bytes: Vec<AtomicU8> = (0..total_bases.div_ceil(4))
+        .into_par_iter()
+        .map(|_| AtomicU8::new(0))
+        .collect();
+
+    let error = (0..kept.len()).into_par_iter().with_min_len(256).map(|j| {
+        let idx = kept[j] as usize;
+        let seq = sequences[idx].as_bytes();
+        let start = offsets.access(j);
+        let end = start + seq.len() as u64;
+        let mut acc = 0u8;
+        for (i, &base) in seq.iter().enumerate() {
+            let code = encoding::encode_base(base).map_err(|_| {
+                format!(
+                    "Failed to encode sequence {idx}: Invalid base at position {i}: {:?}",
+                    base as char
+                )
+            })?;
+            let pos = start + i as u64;
+            acc |= code << ((pos % 4) * 2);
+            if pos % 4 == 3 || pos + 1 == end {
+                let byte = (pos / 4) as usize;
+                let first = byte as u64 * 4;
+                if first >= start && first + 4 <= end {
+                    bytes[byte].store(acc, Relaxed);
+                } else {
+                    bytes[byte].fetch_or(acc, Relaxed);
+                }
+                acc = 0;
+            }
+        }
+        Ok(())
+    }).find_first(|r: &std::result::Result<(), String>| r.is_err());
+    if let Some(Err(e)) = error {
+        return Err(e);
+    }
+
+    let strings: Vec<u8> = bytes.into_iter().map(AtomicU8::into_inner).collect();
+    Ok(SpectrumPreservingStringSet::from_parts(strings, offsets, K, m))
+}
+
 impl<const K: usize> Default for Encoder<K>
 where
     Kmer<K>: KmerBits,
@@ -140,6 +211,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parallel_encoding_matches_encoder() {
+        let mut state = 12345u64;
+        let mut next = || { state = state.wrapping_mul(6364136223846793005).wrapping_add(1); (state >> 33) as usize };
+        let seqs: Vec<String> = (0..500)
+            .map(|_| { let len = next() % 80; (0..len).map(|_| b"ACGTacgt"[next() % 8] as char).collect() })
+            .collect();
+        let mut enc = Encoder::<31>::new();
+        for sq in &seqs { enc.add_sequence(sq.as_bytes()).unwrap(); }
+        let a = enc.build(13);
+        let b = encode_sequences_parallel::<31>(&seqs, 13).unwrap();
+        assert_eq!(a.total_bases(), b.total_bases());
+        assert_eq!(a.num_strings(), b.num_strings());
+        assert_eq!(a.strings_data(), b.strings_data());
+        for i in 0..a.num_strings() {
+            assert_eq!(a.string_length(i), b.string_length(i));
+            assert_eq!(a.string_offset(i), b.string_offset(i));
+        }
+        let mut bad = seqs.clone();
+        bad[7] = "A".repeat(40) + "N";
+        bad[9] = "N".repeat(40);
+        let e = encode_sequences_parallel::<31>(&bad, 13).err().unwrap();
+        assert!(e.starts_with("Failed to encode sequence 7:"), "{e}");
+    }
     
     #[test]
     fn test_encoder_creation() {

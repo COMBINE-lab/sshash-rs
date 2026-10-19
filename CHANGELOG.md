@@ -1,5 +1,125 @@
 # Changelog
 
+## [0.8.0] - 2026-10-19
+
+### Breaking Changes
+
+- **MPHF is now sux's `PHastR`** (sux 0.15.2) instead of `ph`'s PHast
+  (`ph-temp`), which is no longer a dependency. Keys are hashed with
+  rapidhash v3 through a key-type-erased `KeyBytes` wrapper.
+- **Index format v6.0, MPHF container v3.0**: indices built with 0.7.x or
+  earlier must be rebuilt. sux 0.15 also moves to epserde 0.13, whose
+  serialized format is incompatible with 0.12.
+- Dependencies: sux 0.14 → 0.15.2, epserde 0.12 → 0.13, value-traits
+  0.2 → 0.3.
+- **One setting for how the minimizer MPHF is built**:
+  `BuildConfiguration::mphf_build: MphfBuild` (`Streaming(Offline)`, the
+  default, `InMemory` or `Partitioned`; `Offline` is `Auto { min_keys }`,
+  `Always` or `Never`) replaces the `partitioned_mphf` boolean. Every
+  strategy writes the same format and is deterministic in `num_threads`.
+  `MphfBuild` and `Offline` are `#[non_exhaustive]`.
+- `BuildConfiguration` is `#[non_exhaustive]`: build it with `new(k, m)` or
+  `default()` and set fields, not with a struct literal. Its `canonical`
+  field (deprecated and ignored since 0.7.0) is removed; `lambda` is
+  deprecated and ignored (PHastR has no such parameter).
+- `PartitionedMphf`: `build(keys_fn, num_keys, strategy, tmp_dir)` and
+  `build_single(&keys)` replace `build_from_vec` and `build_from_slice`.
+  Its key types (and those of `SkewIndex::lookup` and `KmerBits::Storage`)
+  are bound by `MphfKey` instead of `Hash`.
+- `mphf_config`: `Mphf` is now `PHastR<KeyBytes>`. Removed `MphfHasher`,
+  `mphf_hasher()`, `mphf_params()` and `build_mphf_from_slice` /
+  `build_mphf_from_vec` / `build_mphf_from_slice_mt`. Added `MphfBuild`,
+  `Offline`, the `MphfKey` trait, `KeyBytes`, `KeyArray`, `mphf_get`,
+  `build_mphf`, `build_mphf_parallel`, `build_mphfs`,
+  `build_mphf_streaming(keys, offline, tmp_dir)`, `write_mphf`,
+  `mphf_serialized_bytes`, and the `STREAMING_SWEEP_CHUNKS` /
+  `OFFLINE_MIN_KEYS` constants.
+- Removed `MinimizersControlMapBuilder`, `MinimizerControl`, the control
+  map's `BucketType` and `MinimizersControlMap::from_parts` (use `from_mphf`
+  or the new `empty`): the minimizer → bucket hash map they built is gone
+  (see Performance).
+- Builder internals:
+  - `MinimizerTuple` is 16 bytes: fields other than `minimizer` are accessor
+    methods (`pos_in_seq()`, `pos_in_kmer()`, `num_kmers_in_super_kmer()`),
+    with `with_kmers`, `set_num_kmers_in_super_kmer` and
+    `MAX_POS_IN_SEQ` (2^52) added; it now derives `Ord` (by minimizer, then
+    position, as before) and `Default`.
+  - `BucketRef` and `ClassifiedBuckets::bucket_refs` are removed;
+    `ClassifiedBuckets` exposes `bucket_size`, `bucket_minimizer`,
+    `bucket_type` and `minimizers`.
+  - `SparseAndSkewIndex::build_from_classified` takes the per-bucket MPHF
+    index (`Vec<u32>`) instead of `Option<&[usize]>` (bucket id by MPHF
+    index).
+  - `needs_external_sorting` and `estimate_memory_bytes` take `k` and `m`;
+    new `estimate_num_tuples`.
+  - New `builder::encode::encode_sequences_parallel` and
+    `EliasFanoOffsets::from_iter`.
+- Absent keys: PHastR maps every key, present or not, to an index in range,
+  where `ph`'s PHast could return an out-of-range sentinel. sshash's query
+  paths verify the key at the returned position, so lookups are unchanged,
+  but code that calls the MPHF directly must not treat an in-range result as
+  membership.
+
+### Added
+
+- `sshash build` options `--mphf streaming|in-memory|partitioned`,
+  `--mphf-offline auto|always|never` and `--tmp-dir`.
+
+### Changed
+
+- With the default `MphfBuild`, builds of 2^24 minimizers or more (in-memory
+  path included) write the MPHF's construction records (16 bytes per
+  minimizer, in unlinked temporary files) to `BuildConfiguration::tmp_dirname`,
+  which defaults to the relative directory `sshash_tmp`. The directory is
+  created if absent and not removed afterwards. Use
+  `MphfBuild::Streaming(Offline::Never)`, `InMemory` or `Partitioned` to avoid
+  temporary disk.
+
+### Performance
+
+Human (178M minimizers, 32 threads), sshash construction only: 40.9 s →
+14.6 s, peak memory 19.1 GB → 7.2 GB; through piscem: 149.6 s / 26.7 GB with
+0.7.1 → 78.2 s / 7.4 GB; `.ssi.mphf` 59.5 MB → 54.4 MB. Mapping speed is
+unchanged.
+
+- The minimizer MPHF is built as one function by streaming the minimizers
+  into PHastR (the default), offline in `tmp_dirname` from 2^24 minimizers on
+  (16 bytes/key of disk, about 0.26 GB of memory for 178M minimizers).
+- No strategy builds a minimizer → bucket hash map any more: bucket ids are
+  their index in the sorted minimizers. With `partitioned_mphf` in 0.7 that
+  map and a copy of the minimizers cost ~63 bytes/minimizer (11 GB and 24 s
+  for human); `MphfBuild::Partitioned` now takes 1.2 s and peaks at 8.8 GB
+  overall.
+- Minimizer tuples are 16 bytes instead of 24, collected into one exactly
+  reserved vector a wave at a time (no per-thread vectors concatenated).
+- Buckets are stored as `u32` starts into the tuples instead of a 40-byte
+  descriptor each (7.1 GB → 0.7 GB for human).
+- The sparse index is built in MPHF order from a per-bucket `u32` MPHF
+  index computed in parallel; the bucket-id-by-MPHF-index array and the
+  Elias-Fano input vector are no longer materialized, and offsets are filled
+  in parallel.
+- Sequences are 2-bit encoded in parallel into an exactly sized buffer
+  (13.4 s → 1.2 s for human).
+- Partitioned MPHF construction builds at most `num_threads` partitions at a
+  time, each in exactly sized memory.
+
+### Fixes
+
+- Indices are byte-identical whatever `num_threads` they are built with:
+  the streamed and in-memory minimizer MPHFs use 8 PHastR sweep chunks, and
+  the other MPHFs single-thread pools.
+- The RAM estimate that chooses external sorting assumed one 48-byte tuple
+  per k-mer (67 GB for human, so builds with the default 8 GiB limit always
+  went external); it now uses the expected super-k-mer count. Builds that
+  could exceed 2^32 tuples always use external sorting.
+- `MinimizersControlMap::num_bits` reports the MPHF's actual size instead of
+  a 4 bits/key estimate.
+
+### Dependencies
+
+- Picks up the semver-compatible `Cargo.lock` refresh made on `main` after
+  0.7.1 (58 crates); no Rust release had included it.
+
 ## [0.7.1] - 2026-08-30
 
 ### Fixes

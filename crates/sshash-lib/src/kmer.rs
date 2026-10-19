@@ -19,6 +19,7 @@ pub trait KmerBits: Sized {
     type Storage: Copy
         + Ord
         + Hash
+        + crate::mphf_config::MphfKey
         + fmt::Debug
         + fmt::Display
         + fmt::Binary

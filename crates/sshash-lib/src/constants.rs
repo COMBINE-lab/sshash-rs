@@ -12,7 +12,7 @@ pub const DEFAULT_SEED: u64 = 1;
 /// Default RAM limit in GiB for construction
 pub const DEFAULT_RAM_LIMIT_GIB: usize = 8;
 
-/// For PTHash/PHast MPHF construction
+/// Bucket-size parameter (C++ SSHash `lambda`); not used by the PHastR MPHF
 pub const DEFAULT_LAMBDA: f64 = 5.0;
 /// Average partition size for MPHF construction
 pub const AVG_PARTITION_SIZE: usize = 3_000_000;

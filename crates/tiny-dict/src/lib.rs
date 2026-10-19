@@ -316,8 +316,9 @@ pub struct TinyDictionary {
     ///
     /// # Why hashbrown and not PHast
     ///
-    /// sshash indexes its k-mers with a PHast MPHF (`ph-temp`), so the obvious
-    /// question is why this dictionary does not. Measured head-to-head in
+    /// sshash indexes its k-mers with an MPHF (`ph-temp`'s PHast when this was
+    /// measured, sux's `PHastR` since sshash 0.8), so the obvious question is
+    /// why this dictionary does not. Measured head-to-head against PHast in
     /// August 2026; hashbrown was kept, but the result is closer than it looks
     /// and is worth revisiting rather than treating as settled. Harness and
     /// full tables live in the COMBINE-lab/piscem-rs repository, at

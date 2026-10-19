@@ -776,11 +776,7 @@ mod tests {
     #[test]
     fn test_dictionary_creation() {
         let spss = SpectrumPreservingStringSet::new(31, 13);
-        let control_map = MinimizersControlMap::from_parts(
-            Vec::new(),
-            Vec::new(),
-            0,
-        );
+        let control_map = MinimizersControlMap::empty();
         let index = SparseAndSkewIndex::new();
 
         let dict = Dictionary::new(spss, control_map, index, 31, 13, 1);

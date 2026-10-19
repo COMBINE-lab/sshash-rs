@@ -1,5 +1,5 @@
-use clap::{Parser, Subcommand};
-use sshash_lib::{BuildConfiguration, Dictionary, DictionaryBuilder, Kmer, KmerBits};
+use clap::{Parser, Subcommand, ValueEnum};
+use sshash_lib::{BuildConfiguration, Dictionary, DictionaryBuilder, Kmer, KmerBits, MphfBuild, Offline};
 use sshash_lib::streaming_query::{LookupResult, StreamingQueryEngine};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -47,6 +47,24 @@ enum Commands {
         /// RAM limit in GiB for external sorting (0 = unlimited/in-memory)
         #[arg(short = 'r', long, default_value = "8")]
         ram_limit: usize,
+
+        /// How the minimizer MPHF is built: `streaming` (one function, from
+        /// the sorted minimizers), `in-memory` (one function, from a copy of
+        /// the minimizers) or `partitioned` (~3M-key functions; no temporary
+        /// disk, slower lookups)
+        #[arg(long, value_enum, default_value_t = MphfArg::Streaming)]
+        mphf: MphfArg,
+
+        /// Where `--mphf streaming` keeps its construction records (16 bytes
+        /// per minimizer): `auto` in `--tmp-dir` from 2^24 minimizers on,
+        /// `always` there, `never` in memory
+        #[arg(long, value_enum, default_value_t = OfflineArg::Auto)]
+        mphf_offline: OfflineArg,
+
+        /// Directory for temporary files (external sort, offline MPHF
+        /// construction)
+        #[arg(long, default_value = "sshash_tmp")]
+        tmp_dir: String,
 
         /// Verbose output
         #[arg(short, long)]
@@ -150,8 +168,25 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Build { input, k, m, output, canonical, threads, ram_limit, verbose } => {
-            build_command(input, k, m, output, canonical, threads, ram_limit, verbose)?;
+        Commands::Build { input, k, m, output, canonical, threads, ram_limit, mphf, mphf_offline, tmp_dir, verbose } => {
+            if canonical {
+                warn!("--canonical is deprecated: the index is always canonical");
+            }
+            let mut config = BuildConfiguration::new(k, m).map_err(|e| anyhow::anyhow!("{}", e))?;
+            config.verbose = verbose;
+            config.ram_limit_gib = ram_limit;
+            config.num_threads = threads;
+            config.tmp_dirname = tmp_dir.into();
+            config.mphf_build = match mphf {
+                MphfArg::Streaming => MphfBuild::Streaming(match mphf_offline {
+                    OfflineArg::Auto => Offline::default(),
+                    OfflineArg::Always => Offline::Always,
+                    OfflineArg::Never => Offline::Never,
+                }),
+                MphfArg::InMemory => MphfBuild::InMemory,
+                MphfArg::Partitioned => MphfBuild::Partitioned,
+            };
+            build_command(input, output, config)?;
         }
         Commands::Query { index, query, streaming, forward_only } => {
             query_command(index, query, streaming, forward_only)?;
@@ -176,38 +211,34 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `--mphf` values.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MphfArg {
+    Streaming,
+    InMemory,
+    Partitioned,
+}
+
+/// `--mphf-offline` values.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OfflineArg {
+    Auto,
+    Always,
+    Never,
+}
+
 /// Build a dictionary from FASTA/FASTQ input
-#[allow(clippy::too_many_arguments)]
-fn build_command(
-    input: String,
-    k: usize,
-    m: usize,
-    output: Option<String>,
-    canonical: bool,
-    threads: usize,
-    ram_limit: usize,
-    verbose: bool,
-) -> anyhow::Result<()> {
+fn build_command(input: String, output: Option<String>, config: BuildConfiguration) -> anyhow::Result<()> {
     info!("Building SSHash dictionary...");
     info!("  Input: {}", input);
-    info!("  k: {}", k);
-    info!("  m: {}", m);
-    info!("  RAM limit: {} GiB", ram_limit);
-    
+    info!("  k: {}", config.k);
+    info!("  m: {}", config.m);
+    info!("  RAM limit: {} GiB", config.ram_limit_gib);
+
     // Read sequences - detect format by trying FASTA/FASTQ first, then plain text
     let sequences = parse_sequences_file(&input)?;
     info!("  Loaded {} sequences", sequences.len());
-    
-    // Create builder configuration
-    let mut config = BuildConfiguration::new(k, m)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-    if canonical {
-        warn!("--canonical is deprecated: the index is always canonical");
-    }
-    config.verbose = verbose;
-    config.ram_limit_gib = ram_limit;
-    config.num_threads = threads;
-    
+
     // Build dictionary
     let builder = DictionaryBuilder::new(config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;

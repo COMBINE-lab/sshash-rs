@@ -22,7 +22,7 @@ use crate::constants::{ceil_log2, MIN_L, MAX_L, INVALID_UINT64};
 use crate::kmer::{Kmer, KmerBits};
 use crate::partitioned_mphf::PartitionedMphf;
 use crate::offsets::EliasFanoOffsets;
-use std::hash::Hash;
+use crate::mphf_config::MphfKey;
 use sux::bits::bit_field_vec::BitFieldVec;
 use tracing::info;
 use value_traits::slices::{SliceByValue, SliceByValueMut};
@@ -114,9 +114,9 @@ impl SparseAndSkewIndex {
             let idx0 = offset_start_by_orig[orig_idx] as usize;
             // Forward scheme: one tuple per minimizer position (enforced at
             // classification/merge time), so every tuple is one write.
-            debug_assert!(bucket.tuples.windows(2).all(|p| p[0].pos_in_seq != p[1].pos_in_seq));
+            debug_assert!(bucket.tuples.windows(2).all(|p| p[0].pos_in_seq() != p[1].pos_in_seq()));
             for (off, tuple) in bucket.tuples.iter().enumerate() {
-                offsets.set_value(idx0 + off, tuple.pos_in_seq as usize);
+                offsets.set_value(idx0 + off, tuple.pos_in_seq() as usize);
             }
             if size > MIN_BUCKET_SIZE { heavy_buckets_for_skew.push((orig_idx, size)); }
         }
@@ -138,60 +138,77 @@ impl SparseAndSkewIndex {
     /// Build the sparse and skew index from in-place classified buckets.
     ///
     /// This is the production path — avoids tuple duplication.
+    /// `mphf_index_by_bucket[b]` is the minimizer MPHF's index of bucket `b`;
+    /// the index stores buckets in MPHF order. It is dropped as soon as the
+    /// offsets are filled, before the skew index is built.
     pub fn build_from_classified<const K: usize>(
         classified: &ClassifiedBuckets,
-        mphf_order: Option<&[usize]>,
+        mphf_index_by_bucket: Vec<u32>,
         num_bits_per_offset: usize,
         spss: &crate::spectrum_preserving_string_set::SpectrumPreservingStringSet,
     ) -> Self
     where
         Kmer<K>: KmerBits,
     {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
+        use sux::bits::bit_field_vec::AtomicBitFieldVec;
+        use sux::traits::AtomicBitFieldSlice;
+
         let num_buckets = classified.num_buckets();
+        assert_eq!(mphf_index_by_bucket.len(), num_buckets);
         let t0 = std::time::Instant::now();
 
-        // --- Pass 1: Build EF + compute per-bucket offset positions ---
-        let mut extras = Vec::with_capacity(num_buckets + 1);
-        extras.push(0u64);
-        let mut total_super_kmers: usize = 0;
+        // --- Pass 1: bucket sizes in MPHF order, prefix-summed in place into
+        // each bucket's first offset (`starts[num_buckets]` = total), and the
+        // EF of super-k-mers before each bucket beyond its first. ---
+        let starts: Vec<AtomicU32> = (0..=num_buckets).into_par_iter().map(|_| AtomicU32::new(0)).collect();
+        (0..num_buckets).into_par_iter().for_each(|b| {
+            starts[mphf_index_by_bucket[b] as usize].store(classified.bucket_size(b) as u32, Relaxed);
+        });
+        let mut starts: Vec<u32> = starts.into_iter().map(AtomicU32::into_inner).collect();
+        let mut total_super_kmers: u64 = 0;
         let mut max_bucket_size: usize = 0;
-        let mut offset_start_by_orig: Vec<u32> = vec![0; num_buckets];
-        for i in 0..num_buckets {
-            let orig_idx = mphf_order.map_or(i, |order| order[i]);
-            let size = classified.bucket_refs[orig_idx].cached_size;
-            if size > max_bucket_size {
-                max_bucket_size = size;
-            }
-            offset_start_by_orig[orig_idx] = total_super_kmers as u32;
-            total_super_kmers += size;
-            let prev = *extras.last().unwrap();
-            extras.push(prev + (size as u64).saturating_sub(1));
+        for start in starts.iter_mut() {
+            let size = *start;
+            max_bucket_size = max_bucket_size.max(size as usize);
+            *start = total_super_kmers as u32;
+            total_super_kmers += size as u64;
         }
-        let num_super_kmers_before_bucket = EliasFanoOffsets::from_vec(&extras);
-        drop(extras);
+        assert!(total_super_kmers < u32::MAX as u64);
+        let total_super_kmers = total_super_kmers as usize;
+        // extras[i] = sum over buckets j < i of (size_j - 1) = starts[i] - i
+        let num_super_kmers_before_bucket = EliasFanoOffsets::from_iter(
+            num_buckets + 1,
+            (total_super_kmers - num_buckets) as u64,
+            starts.iter().enumerate().map(|(i, &s)| s as u64 - i as u64),
+        );
         info!("  Pass 1 (EF build): {:.2}s — {} buckets, {} total super-kmers, max_bucket_size={}",
             t0.elapsed().as_secs_f64(), num_buckets, total_super_kmers, max_bucket_size);
         let t1 = std::time::Instant::now();
 
-        // --- Pass 2: Fill flat offsets array ---
-        let mut offsets = BitFieldVec::new(num_bits_per_offset.max(1), total_super_kmers);
-        let mut heavy_buckets_for_skew: Vec<(usize, usize)> = Vec::new();
-        #[allow(clippy::needless_range_loop)] // orig_idx indexes multiple arrays + method calls
-        for orig_idx in 0..num_buckets {
-            let bref = &classified.bucket_refs[orig_idx];
-            let size = bref.cached_size;
-            let idx0 = offset_start_by_orig[orig_idx] as usize;
+        // --- Pass 2: fill the flat offsets array, buckets in parallel (each
+        // writes its own range; neighbors may share words, hence atomics) ---
+        let offsets: AtomicBitFieldVec<Vec<AtomicUsize>> =
+            AtomicBitFieldVec::new(num_bits_per_offset.max(1), total_super_kmers);
+        (0..num_buckets).into_par_iter().with_min_len(1 << 12).for_each(|b| {
+            let idx0 = starts[mphf_index_by_bucket[b] as usize] as usize;
             // Forward scheme: one tuple per minimizer position (enforced at
-            // classification/merge time), so every tuple is one write.
-            for (off, tuple) in classified.bucket_tuples(orig_idx).iter().enumerate() {
-                offsets.set_value(idx0 + off, tuple.pos_in_seq as usize);
+            // classification time), so every tuple is one write.
+            for (off, tuple) in classified.bucket_tuples(b).iter().enumerate() {
+                offsets.set_atomic(idx0 + off, tuple.pos_in_seq() as usize, Relaxed);
             }
-
-            if size > MIN_BUCKET_SIZE {
-                heavy_buckets_for_skew.push((orig_idx, size));
-            }
-        }
-        drop(offset_start_by_orig);
+        });
+        drop(starts);
+        drop(mphf_index_by_bucket);
+        let offsets: BitFieldVec = offsets.try_into().expect("AtomicUsize and usize have the same alignment");
+        let mut heavy_buckets_for_skew: Vec<(usize, usize)> = (0..num_buckets)
+            .into_par_iter()
+            .filter_map(|b| {
+                let size = classified.bucket_size(b);
+                (size > MIN_BUCKET_SIZE).then_some((b, size))
+            })
+            .collect();
 
         info!("  Pass 2 (fill offsets): {:.2}s — {} heavy buckets collected",
             t1.elapsed().as_secs_f64(), heavy_buckets_for_skew.len());
@@ -555,8 +572,7 @@ impl SkewIndex {
     {
         let tuples_iter = heavy_buckets_for_skew.iter()
             .map(|&(orig_idx, _size)| {
-                let bref = &classified.bucket_refs[orig_idx];
-                (bref.cached_size, classified.bucket_tuples(orig_idx))
+                (classified.bucket_size(orig_idx), classified.bucket_tuples(orig_idx))
             });
         Self::build_inner::<K>(tuples_iter, max_bucket_size, spss)
     }
@@ -600,7 +616,8 @@ impl SkewIndex {
         let mut num_bits_per_pos = MIN_L + 1;
 
         let mut partition_kmers: Vec<<Kmer<K> as KmerBits>::Storage> = Vec::new();
-        let mut partition_positions: Vec<usize> = Vec::new();
+        // Positions within a bucket (max bucket size < 2^32)
+        let mut partition_positions: Vec<u32> = Vec::new();
 
         for (bucket_size, bucket_tuples) in heavy_buckets {
             // Finalize current partition(s) if this bucket is too large
@@ -611,7 +628,7 @@ impl SkewIndex {
                         let mut rp = BitFieldVec::new(num_bits_per_pos, partition_positions.len());
                         for (i, &kmer_value) in partition_kmers.iter().enumerate() {
                             let pos = mphf.get(&kmer_value);
-                            rp.set_value(pos, partition_positions[i]);
+                            rp.set_value(pos, partition_positions[i] as usize);
                         }
                         rp
                     } else {
@@ -642,11 +659,11 @@ impl SkewIndex {
             for tuple in bucket_tuples {
                 pos_in_bucket += 1;
 
-                debug_assert!(tuple.pos_in_seq >= tuple.pos_in_kmer as u64);
+                debug_assert!(tuple.pos_in_seq() >= tuple.pos_in_kmer() as u64);
                 let starting_kmer_pos =
-                    (tuple.pos_in_seq - tuple.pos_in_kmer as u64) as usize;
+                    (tuple.pos_in_seq() - tuple.pos_in_kmer() as u64) as usize;
 
-                for kmer_offset in 0..tuple.num_kmers_in_super_kmer {
+                for kmer_offset in 0..tuple.num_kmers_in_super_kmer() {
                     let kmer: Kmer<K> = spss.decode_kmer_at(starting_kmer_pos + kmer_offset as usize);
                     // The skew MPHF keys on the canonical k-mer, matching the
                     // canonical probe in the lookup path.
@@ -654,7 +671,7 @@ impl SkewIndex {
                     let kmer_value = kmer.bits().min(rc_value);
 
                     partition_kmers.push(kmer_value);
-                    partition_positions.push((pos_in_bucket - 1) as usize);
+                    partition_positions.push(pos_in_bucket - 1);
                 }
             }
         }
@@ -666,7 +683,7 @@ impl SkewIndex {
                 let mut rp = BitFieldVec::new(num_bits_per_pos, partition_positions.len());
                 for (i, &kmer_value) in partition_kmers.iter().enumerate() {
                     let pos = mphf.get(&kmer_value);
-                    rp.set_value(pos, partition_positions[i]);
+                    rp.set_value(pos, partition_positions[i] as usize);
                 }
                 rp
             } else {
@@ -690,7 +707,7 @@ impl SkewIndex {
     ///
     /// # Returns
     /// The within-bucket super-kmer index, or INVALID_UINT64 if not found
-    pub fn lookup<T: Hash>(&self, kmer_value: &T, log2_bucket_size: usize) -> u64 {
+    pub fn lookup<T: MphfKey>(&self, kmer_value: &T, log2_bucket_size: usize) -> u64 {
         if log2_bucket_size <= MIN_L {
             return INVALID_UINT64;
         }
@@ -772,14 +789,14 @@ impl SkewIndex {
 /// Generic over the key type (`u64` for K <= 31, `u128` for K > 31).
 /// Skew index partitions are typically small enough that a single (non-partitioned)
 /// MPHF is used — partitioning is only relevant for the main minimizer MPHF.
-fn build_partition_mphf<T: Hash + Clone + Sync + Send>(kmers: &[T]) -> Option<PartitionedMphf> {
+fn build_partition_mphf<T: MphfKey>(kmers: &[T]) -> Option<PartitionedMphf> {
     if kmers.is_empty() {
         return None;
     }
 
     // Skew index MPHFs are always monolithic (single partition) since they cover
     // a single size-class bucket, not the full minimizer set.
-    Some(PartitionedMphf::build_from_slice(kmers, false))
+    Some(PartitionedMphf::build_single(kmers))
 }
 
 impl Default for SkewIndex {

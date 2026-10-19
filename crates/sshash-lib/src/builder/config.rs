@@ -4,10 +4,16 @@
 //! dictionary building, minimizer computation, and resource limits.
 
 use crate::constants::DEFAULT_SEED;
+use crate::mphf_config::MphfBuild;
 use std::path::PathBuf;
 
 /// Configuration parameters for building an SSHash dictionary
+///
+/// Create one with [`BuildConfiguration::new`] (or `default()`) and set the
+/// fields to change; the struct is non-exhaustive so that adding options is
+/// not a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct BuildConfiguration {
     /// K-mer length (must be odd, between 3 and 63)
     pub k: usize,
@@ -24,18 +30,15 @@ pub struct BuildConfiguration {
     /// RAM limit in GiB for external sorting
     pub ram_limit_gib: usize,
     
-    /// PTHash lambda parameter (trade-off for MPHF construction)
-    /// Typically 3.5-4.0 for minimal size, higher for faster queries
+    /// Ignored since 0.8.0: PHastR, the MPHF since 0.8.0, has no lambda
+    /// parameter. See [`Self::mphf_build`] for the MPHF options.
+    #[deprecated(since = "0.8.0", note = "ignored: the PHastR MPHF has no lambda parameter")]
     pub lambda: f64,
-    
-    /// Ignored since 0.7.0: the index is always canonical (the unified
-    /// C++-v6-style minimizer scheme answers both strands at forward-mode
-    /// cost, so there is no modality to choose).
-    #[deprecated(since = "0.7.0", note = "the index is always canonical; this field is ignored")]
-    pub canonical: bool,
-    
-    /// Use partitioned MPHF for parallel construction (default: true)
-    pub partitioned_mphf: bool,
+
+    /// How the minimizer MPHF is built (default: streamed as one function,
+    /// offline from 2^24 minimizers on). See [`MphfBuild`] for the trade-offs
+    /// between build time, build memory, temporary disk and lookup speed.
+    pub mphf_build: MphfBuild,
 
     /// Build weighted dictionary (with k-mer abundance/weights)
     pub weighted: bool,
@@ -62,9 +65,8 @@ impl Default for BuildConfiguration {
             seed: DEFAULT_SEED,
             num_threads: 0, // 0 = use all available cores
             ram_limit_gib: 8,
-            lambda: 6.0,  // C++ default
-            canonical: true,
-            partitioned_mphf: true,
+            lambda: 6.0,
+            mphf_build: MphfBuild::default(),
             weighted: false,
             verbose: true,
             force_external_sort: false,
@@ -106,11 +108,6 @@ impl BuildConfiguration {
             return Err(format!("m must be in range [1, 31], got m={}", self.m));
         }
         
-        // Check lambda is reasonable
-        if self.lambda < 1.0 || self.lambda > 100.0 {
-            return Err(format!("lambda should be in range [1.0, 100.0], got {}", self.lambda));
-        }
-        
         Ok(())
     }
     
@@ -126,7 +123,7 @@ impl BuildConfiguration {
             tracing::info!("  num_threads = {}", self.num_threads);
         }
         tracing::debug!("  ram_limit_gib = {}", self.ram_limit_gib);
-        tracing::debug!("  lambda = {}", self.lambda);
+        tracing::debug!("  mphf_build = {:?}", self.mphf_build);
         tracing::debug!("  weighted = {}", self.weighted);
         tracing::debug!("  verbose = {}", self.verbose);
         tracing::debug!("  tmp_dirname = {:?}", self.tmp_dirname);
