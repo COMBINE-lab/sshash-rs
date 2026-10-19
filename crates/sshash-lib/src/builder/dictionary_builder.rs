@@ -12,17 +12,18 @@ use crate::{
     builder::{
         buckets::{classify_into_buckets_inplace, ClassifiedBuckets, BucketStatistics, MIN_BUCKET_SIZE},
         config::BuildConfiguration,
-        encode::Encoder,
         external_sort::FileTuples,
         minimizer_tuples::{compute_minimizer_tuples, compute_minimizer_tuples_external_file, needs_external_sorting},
     },
     dictionary::Dictionary,
     kmer::{Kmer, KmerBits},
-    minimizers_control_map::{MinimizersControlMap, MinimizersControlMapBuilder, BucketType},
+    minimizers_control_map::MinimizersControlMap,
+    mphf_config::MphfBuild,
     partitioned_mphf::PartitionedMphf,
     sparse_and_skew_index::SparseAndSkewIndex,
     spectrum_preserving_string_set::SpectrumPreservingStringSet,
 };
+use rayon::prelude::*;
 use std::io::{BufWriter, Write};
 use tracing::info;
 
@@ -111,7 +112,7 @@ impl DictionaryBuilder {
         let total_kmers = total_bases.saturating_sub(num_strings * (k - 1));
 
         if self.config.force_external_sort
-            || needs_external_sorting(total_kmers, self.config.ram_limit_gib)
+            || needs_external_sorting(total_kmers, self.config.k, self.config.m, self.config.ram_limit_gib)
         {
             info!("Using external sorting: estimated {} k-mers exceeds RAM limit of {} GiB",
                 total_kmers, self.config.ram_limit_gib);
@@ -132,6 +133,12 @@ impl DictionaryBuilder {
             Ok::<_, String>(compute_minimizer_tuples::<K>(&spss, &self.config))
         })?;
         info!("  Extracted and coalesced {} tuples", tuples.len());
+        if tuples.len() >= u32::MAX as usize {
+            // The in-memory path indexes tuples and buckets with u32
+            info!("  {} tuples: falling back to external sorting", tuples.len());
+            drop(tuples);
+            return self.build_with_external_sort(spss);
+        }
 
         // Step 3: Classify into buckets (in-place — no tuple duplication)
         info!("Step 3: Classifying buckets (in-place)...");
@@ -146,17 +153,12 @@ impl DictionaryBuilder {
 
         // Step 4: Build minimizers control map
         info!("Step 4: Building minimizers control map...");
-        let (control_map, bucket_id_by_mphf_index) = self.build_control_map(&classified)?;
+        let (control_map, mphf_index_by_bucket) = self.build_control_map(&classified)?;
         info!("  Built MPHF for {} minimizers", control_map.num_minimizers());
 
         // Step 5: Build sparse and skew index
         info!("Step 5: Building sparse and skew index...");
-        let mphf_order = if !bucket_id_by_mphf_index.is_empty() {
-            Some(bucket_id_by_mphf_index)
-        } else {
-            None
-        };
-        let index = self.build_index(&classified, mphf_order.as_deref(), &spss)?;
+        let index = self.build_index(&classified, mphf_index_by_bucket, &spss)?;
         info!("  Index built successfully");
 
         self.assemble_dictionary(spss, control_map, index)
@@ -231,7 +233,6 @@ impl DictionaryBuilder {
     
     /// Scan the merged file, collect minimizers, and build MPHF directly.
     ///
-    /// Bypasses `MinimizersControlMapBuilder` entirely for the external sort path.
     /// Splits scanning into two passes to avoid holding 3.2 GB minimizers Vec
     /// and 1.6 GB cached_sizes Vec simultaneously:
     ///
@@ -245,31 +246,33 @@ impl DictionaryBuilder {
         &self,
         file_tuples: &FileTuples,
     ) -> Result<(BucketMetadata, MinimizersControlMap, Vec<usize>), String> {
-        // --- Pass A (streaming): feed the minimizers straight into the MPHF ---
-        let mphf = if self.config.streaming_mphf {
-            let bucket_iter = file_tuples.bucket_iter()
-                .map_err(|e| format!("Failed to open file for pass A: {e}"))?;
-            info!("Building PHastR MPHF for {} tuples' minimizers (streaming)", file_tuples.num_tuples());
-            // The tuple count bounds the bucket count: it only selects
-            // offline construction for large inputs.
-            Some(PartitionedMphf::build_streaming(
-                bucket_iter.map(|scan| scan.minimizer),
-                file_tuples.num_tuples(),
-                &self.config.tmp_dirname,
-            ))
-        } else {
-            None
+        // --- Pass A: build the MPHF of the bucket minimizers ---
+        let mphf = match self.config.mphf_build {
+            MphfBuild::Streaming(offline) => {
+                let bucket_iter = file_tuples.bucket_iter()
+                    .map_err(|e| format!("Failed to open file for pass A: {e}"))?;
+                info!("Building PHastR MPHF for {} tuples' minimizers (streaming)", file_tuples.num_tuples());
+                // The tuple count bounds the bucket count: it only decides
+                // offline construction.
+                let mut bucket_iter = Some(bucket_iter);
+                PartitionedMphf::build(
+                    || bucket_iter.take().expect("streaming reads the keys once").map(|scan| scan.minimizer),
+                    file_tuples.num_tuples(),
+                    MphfBuild::Streaming(offline),
+                    &self.config.tmp_dirname,
+                )
+            }
+            strategy => self.build_mphf_via_minimizers_file(file_tuples, strategy)?,
         };
-        let mphf = match mphf { Some(m) => m, None => self.build_mphf_via_minimizers_file(file_tuples)? };
         let num_buckets = mphf.num_keys();
 
         // --- Pass B: Rescan file → build bucket_id_by_mphf_index + cached_sizes ---
         self.scan_pass_b(file_tuples, mphf, num_buckets)
     }
 
-    /// Pass A (non-streaming): write minimizers to a temp file, mmap it, and
-    /// build a partitioned MPHF from the mapped slice.
-    fn build_mphf_via_minimizers_file(&self, file_tuples: &FileTuples) -> Result<PartitionedMphf, String> {
+    /// Pass A (non-streaming strategies): write minimizers to a temp file,
+    /// mmap it, and build the MPHF from the mapped slice.
+    fn build_mphf_via_minimizers_file(&self, file_tuples: &FileTuples, strategy: MphfBuild) -> Result<PartitionedMphf, String> {
         let minimizers_path = file_tuples.path().with_extension("minimizers.tmp");
         let mut num_buckets = 0usize;
         {
@@ -297,9 +300,13 @@ impl DictionaryBuilder {
             std::slice::from_raw_parts(min_mmap.as_ptr() as *const u64, num_buckets)
         };
         // Build MPHF from the mmap'd slice — no heap allocation for keys
-        info!("Building PHastR MPHF for {} minimizers (partitioned={})",
-            num_buckets, self.config.partitioned_mphf);
-        let mphf = PartitionedMphf::build_from_slice(minimizers_slice, self.config.partitioned_mphf);
+        info!("Building PHastR MPHF for {} minimizers ({:?})", num_buckets, strategy);
+        let mphf = PartitionedMphf::build(
+            || minimizers_slice.iter().copied(),
+            num_buckets,
+            strategy,
+            &self.config.tmp_dirname,
+        );
 
         // Drop minimizers mmap + delete temp file
         drop(min_mmap);
@@ -397,80 +404,44 @@ impl DictionaryBuilder {
     where
         Kmer<K>: KmerBits,
     {
-        let mut encoder = Encoder::<K>::new();
-        
-        for (idx, seq) in sequences.iter().enumerate() {
-            encoder.add_sequence(seq.as_bytes()).map_err(|e| {
-                format!("Failed to encode sequence {}: {}", idx, e)
-            })?;
-        }
-        
-        Ok(encoder.build(self.config.m))
+        crate::builder::encode::encode_sequences_parallel::<K>(&sequences, self.config.m)
     }
     
-    /// Build the minimizers control map from classified buckets (in-memory path).
+    /// Build the minimizers control map from classified buckets (in-memory
+    /// path), and each bucket's MPHF index.
     ///
-    /// Returns the control map AND a mapping from MPHF index to bucket_id
-    /// for reordering control_codewords to MPHF order.
-    fn build_control_map(&self, classified: &ClassifiedBuckets) -> Result<(crate::minimizers_control_map::MinimizersControlMap, Vec<usize>), String> {
+    /// Bucket minimizers are sorted and distinct, and a bucket's id is its
+    /// index, so the MPHF is built straight from them with the configured
+    /// [`MphfBuild`] strategy.
+    fn build_control_map(&self, classified: &ClassifiedBuckets) -> Result<(MinimizersControlMap, Vec<u32>), String> {
         let num_buckets = classified.num_buckets();
-        if self.config.streaming_mphf && num_buckets > 0 {
-            // Bucket refs hold one entry per minimizer (they come from sorted
-            // tuples), and a bucket's id is its index, so stream the
-            // minimizers straight into the MPHF: no key copy, no
-            // minimizer → bucket map.
-            info!("Building PHastR MPHF for {} minimizers (streaming)", num_buckets);
-            let mphf = PartitionedMphf::build_streaming(
-                classified.bucket_refs.iter().map(|b| b.minimizer),
-                num_buckets,
-                &self.config.tmp_dirname,
-            );
-            let mut bucket_id_by_mphf_index = vec![0usize; num_buckets];
-            for (bucket_id, bref) in classified.bucket_refs.iter().enumerate() {
-                bucket_id_by_mphf_index[mphf.get(&bref.minimizer)] = bucket_id;
-            }
-            let control_map = MinimizersControlMap::from_mphf(mphf, num_buckets as u64);
-            return Ok((control_map, bucket_id_by_mphf_index));
-        }
-
-        let mut builder = MinimizersControlMapBuilder::new();
-
-        for (bucket_id, bref) in classified.bucket_refs.iter().enumerate() {
-            builder.add_minimizer(bref.minimizer);
-
-            let bucket_type = match bref.bucket_type {
-                crate::builder::buckets::BucketType::Singleton => BucketType::Regular,
-                crate::builder::buckets::BucketType::Light => BucketType::Sparse,
-                crate::builder::buckets::BucketType::Heavy => BucketType::HeavyLoad,
-            };
-
-            builder.set_bucket_type(bref.minimizer, bucket_type);
-
-            if let Some(control) = builder.get_control_mut(bref.minimizer) {
-                control.metadata = bucket_id as u64;
-            }
-        }
-
-        let c = 100u16;
-        let alpha = 0.94;
-
-        builder.build(c, alpha, self.config.partitioned_mphf).map_err(|e| {
-            format!("Failed to build minimizers control map: {}", e)
-        })
+        info!("Building PHastR MPHF for {} minimizers ({:?})", num_buckets, self.config.mphf_build);
+        let mphf = PartitionedMphf::build(
+            || classified.minimizers(),
+            num_buckets,
+            self.config.mphf_build,
+            &self.config.tmp_dirname,
+        );
+        let mphf_index_by_bucket: Vec<u32> = (0..num_buckets)
+            .into_par_iter()
+            .map(|b| mphf.get(&classified.bucket_minimizer(b)) as u32)
+            .collect();
+        let control_map = MinimizersControlMap::from_mphf(mphf, num_buckets as u64);
+        Ok((control_map, mphf_index_by_bucket))
     }
     
     /// Build the sparse and skew index
     fn build_index(
         &self,
         classified: &ClassifiedBuckets,
-        mphf_order: Option<&[usize]>,
+        mphf_index_by_bucket: Vec<u32>,
         spss: &SpectrumPreservingStringSet,
     ) -> Result<SparseAndSkewIndex, String> {
         let total_bases = spss.total_bases();
         let num_bits_per_offset = crate::constants::ceil_log2(total_bases);
 
         let index = crate::dispatch_on_k!(self.config.k, K => {
-            SparseAndSkewIndex::build_from_classified::<K>(classified, mphf_order, num_bits_per_offset, spss)
+            SparseAndSkewIndex::build_from_classified::<K>(classified, mphf_index_by_bucket, num_bits_per_offset, spss)
         });
 
         Ok(index)

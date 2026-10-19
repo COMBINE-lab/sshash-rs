@@ -145,7 +145,7 @@ fn test_canonical_mode_pipeline() {
 
     // All pos_in_kmer values should be valid (0 to k-m)
     for tuple in &tuples {
-        assert!(tuple.pos_in_kmer <= (31 - 13) as u8);
+        assert!(tuple.pos_in_kmer() <= (31 - 13) as u8);
     }
 
     // Build index in canonical mode

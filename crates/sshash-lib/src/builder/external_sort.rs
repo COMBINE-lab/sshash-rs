@@ -60,20 +60,20 @@ impl MinimizerTupleExternal {
     pub fn from_internal(t: &MinimizerTuple) -> Self {
         Self {
             minimizer: t.minimizer,
-            pos_in_seq: t.pos_in_seq,
-            pos_in_kmer: t.pos_in_kmer,
-            num_kmers_in_super_kmer: t.num_kmers_in_super_kmer,
+            pos_in_seq: t.pos_in_seq(),
+            pos_in_kmer: t.pos_in_kmer(),
+            num_kmers_in_super_kmer: t.num_kmers_in_super_kmer(),
         }
     }
 
     /// Convert to internal MinimizerTuple
     pub fn to_internal(&self) -> MinimizerTuple {
-        MinimizerTuple {
-            minimizer: self.minimizer,
-            pos_in_seq: self.pos_in_seq,
-            pos_in_kmer: self.pos_in_kmer,
-            num_kmers_in_super_kmer: self.num_kmers_in_super_kmer,
-        }
+        MinimizerTuple::with_kmers(
+            self.minimizer,
+            self.pos_in_seq,
+            self.pos_in_kmer,
+            self.num_kmers_in_super_kmer,
+        )
     }
 
     /// Read from bytes (unsafe, assumes correct alignment)

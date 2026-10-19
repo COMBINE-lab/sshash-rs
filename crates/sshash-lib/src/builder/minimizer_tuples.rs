@@ -22,7 +22,6 @@
 //! - When buffer fills → parallel sort + flush to temp binary file
 //! - After all tuples → k-way merge of temp files using loser tree
 
-use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -44,52 +43,68 @@ use super::external_sort::{ExternalSorter, MinimizerTupleExternal, GIB};
 /// The minimizer value is the canonical m-mer at the anchored locus (the
 /// unified scheme), and `pos_in_kmer` is the locus in the forward frame of
 /// the SPSS string; a lookup probes both `pos` and its mirror `k - m - pos`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct MinimizerTuple {
     /// The minimizer value (m-mer)
     pub minimizer: u64,
 
-    /// Position of the minimizer in the sequence (in bases from string start)
-    pub pos_in_seq: u64,
-
-    /// The selected locus within the k-mer window (0 to k-m), in the
-    /// forward frame of the stored string.
-    pub pos_in_kmer: u8,
-
-    /// Number of consecutive k-mers that share this minimizer (super-k-mer size)
-    pub num_kmers_in_super_kmer: u8,
+    /// `pos_in_seq << 12 | pos_in_kmer << 6 | num_kmers_in_super_kmer`, so
+    /// that a tuple is 16 bytes and ordering by `(minimizer, packed)` is
+    /// ordering by `(minimizer, pos_in_seq)` (a minimizer occurs once per
+    /// position). `pos_in_kmer <= k - m` and `num_kmers_in_super_kmer <=
+    /// k - m + 1` fit 6 bits for k <= 63, and positions fit 52 bits.
+    packed: u64,
 }
 
 impl MinimizerTuple {
-    /// Create a new minimizer tuple
+    /// Largest supported `pos_in_seq` (exclusive): 2^52 bases.
+    pub const MAX_POS_IN_SEQ: u64 = 1 << 52;
+
+    /// Create a new minimizer tuple (one k-mer in its super-k-mer)
+    #[inline]
     pub fn new(minimizer: u64, pos_in_seq: u64, pos_in_kmer: u8) -> Self {
+        Self::with_kmers(minimizer, pos_in_seq, pos_in_kmer, 1)
+    }
+
+    /// Create a tuple for a super-k-mer of `num_kmers_in_super_kmer` k-mers
+    #[inline]
+    pub fn with_kmers(minimizer: u64, pos_in_seq: u64, pos_in_kmer: u8, num_kmers_in_super_kmer: u8) -> Self {
+        debug_assert!(pos_in_seq < Self::MAX_POS_IN_SEQ);
+        debug_assert!(pos_in_kmer < 64 && num_kmers_in_super_kmer < 64);
         Self {
             minimizer,
-            pos_in_seq,
-            pos_in_kmer,
-            num_kmers_in_super_kmer: 1,
+            packed: pos_in_seq << 12 | (pos_in_kmer as u64) << 6 | num_kmers_in_super_kmer as u64,
         }
+    }
+
+    /// Position of the minimizer in the sequence (in bases from string start)
+    #[inline(always)]
+    pub fn pos_in_seq(&self) -> u64 {
+        self.packed >> 12
+    }
+
+    /// The selected locus within the k-mer window (0 to k-m), in the
+    /// forward frame of the stored string.
+    #[inline(always)]
+    pub fn pos_in_kmer(&self) -> u8 {
+        (self.packed >> 6 & 63) as u8
+    }
+
+    /// Number of consecutive k-mers that share this minimizer (super-k-mer size)
+    #[inline(always)]
+    pub fn num_kmers_in_super_kmer(&self) -> u8 {
+        (self.packed & 63) as u8
+    }
+
+    /// Set the super-k-mer size
+    #[inline(always)]
+    pub fn set_num_kmers_in_super_kmer(&mut self, n: u8) {
+        debug_assert!(n < 64);
+        self.packed = self.packed & !63 | n as u64;
     }
 }
 
-impl PartialOrd for MinimizerTuple {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for MinimizerTuple {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Primary sort by minimizer value
-        match self.minimizer.cmp(&other.minimizer) {
-            Ordering::Equal => {
-                // Secondary sort by position in sequence
-                self.pos_in_seq.cmp(&other.pos_in_seq)
-            }
-            other => other,
-        }
-    }
-}
+const _: () = assert!(std::mem::size_of::<MinimizerTuple>() == 16);
 
 /// Compute minimizer tuples from an encoded SPSS (parallelized with rayon)
 ///
@@ -128,15 +143,70 @@ where
     }
 
     let num_strings = spss.num_strings() as usize;
+    let total_bases = spss.total_bases();
+    assert!(
+        total_bases < MinimizerTuple::MAX_POS_IN_SEQ,
+        "{total_bases} bases exceed the 2^52 supported by minimizer tuples"
+    );
 
-    // Process strings in parallel — each string produces locally coalesced tuples.
-    // rayon's flat_map_iter collects per-string Vec results efficiently.
-    let mut tuples: Vec<MinimizerTuple> = (0..num_strings)
-        .into_par_iter()
-        .flat_map_iter(|string_id| {
-            extract_tuples_for_string::<K>(spss, string_id as u64, k, m, config)
-        })
+    // Strings are processed in parallel batches, a wave of batches at a time,
+    // and each wave is copied (in parallel) into one vector. Tuples are never
+    // all held twice, as when collecting per-thread vectors and concatenating
+    // them. The vector reserves the expected tuple count plus 25% up front:
+    // capacity that is never written costs no memory, while growing it would
+    // copy every tuple so far. The order of tuples before sorting does not
+    // matter: the sort below is a total order.
+    let num_batches = (num_strings / 64).clamp(1, 4096);
+    let batch_len = num_strings.div_ceil(num_batches);
+    let batches: Vec<std::ops::Range<usize>> = (0..num_strings)
+        .step_by(batch_len.max(1))
+        .map(|lo| lo..(lo + batch_len).min(num_strings))
         .collect();
+    let wave_len = batches.len().div_ceil(16).max(1);
+    let total_kmers = total_bases.saturating_sub(num_strings as u64 * (k as u64 - 1));
+    let expected = estimate_num_tuples(total_kmers, k, m) as f64 / 1.25; // 2/(w+1) per k-mer
+    let tuples_per_base = expected / total_bases.max(1) as f64;
+
+    let mut tuples: Vec<MinimizerTuple> = Vec::with_capacity((expected * 1.25) as usize);
+    let mut bases_done = 0u64;
+    for wave in batches.chunks(wave_len) {
+        let outs: Vec<(Vec<MinimizerTuple>, u64)> = wave
+            .par_iter()
+            .map(|range| {
+                let bases: u64 = range.clone().map(|s| spss.string_length(s as u64) as u64).sum();
+                let mut out = Vec::with_capacity((bases as f64 * tuples_per_base * 1.25) as usize + 16);
+                for string_id in range.clone() {
+                    extract_tuples_for_string::<K>(spss, string_id as u64, k, m, config, &mut out);
+                }
+                (out, bases)
+            })
+            .collect();
+        let wave_tuples: usize = outs.iter().map(|(o, _)| o.len()).sum();
+        bases_done += outs.iter().map(|(_, b)| b).sum::<u64>();
+        if tuples.len() + wave_tuples > tuples.capacity() {
+            // More tuples than expected: grow to the projection from the
+            // density so far (rare; costs one copy of the tuples so far)
+            let projected = ((tuples.len() + wave_tuples) as f64 * total_bases as f64
+                / bases_done.max(1) as f64
+                * 1.1) as usize;
+            tuples.reserve_exact(projected.max(tuples.len() + wave_tuples) - tuples.len());
+        }
+        // Copy the wave into the spare capacity, each batch at its offset
+        let mut dst = &mut tuples.spare_capacity_mut()[..wave_tuples];
+        let mut parts = Vec::with_capacity(outs.len());
+        for (out, _) in &outs {
+            let (head, rest) = dst.split_at_mut(out.len());
+            parts.push((head, out.as_slice()));
+            dst = rest;
+        }
+        parts.into_par_iter().for_each(|(dst, src)| {
+            for (d, s) in dst.iter_mut().zip(src) {
+                d.write(*s);
+            }
+        });
+        // SAFETY: the `wave_tuples` slots after `len` were all written above
+        unsafe { tuples.set_len(tuples.len() + wave_tuples) };
+    }
 
     // Parallel sort by (minimizer, pos_in_seq) — exactly like C++
     // This is the only sorting step; coalescing has already happened during extraction
@@ -156,18 +226,17 @@ fn extract_tuples_for_string<const K: usize>(
     k: usize,
     m: usize,
     config: &BuildConfiguration,
-) -> Vec<MinimizerTuple>
-where
+    tuples: &mut Vec<MinimizerTuple>,
+) where
     Kmer<K>: KmerBits,
 {
     let string_len = spss.string_length(string_id);
 
     if string_len < k {
-        return Vec::new();
+        return;
     }
 
     let num_kmers = string_len - k + 1;
-    let mut tuples = Vec::new();
 
     // CREATE MINIMIZER ITERATOR ONCE PER STRING (matching C++ behavior!)
     // Maintains state across k-mers for efficient super-k-mer detection
@@ -196,25 +265,21 @@ where
             string_begin + kmer_pos as u64 + mini.pos_in_kmer as u64
         );
 
-        let current_mini = MinimizerTuple {
-            minimizer: mini.value,
-            pos_in_seq: mini.position,
-            pos_in_kmer: mini.pos_in_kmer as u8,
-            num_kmers_in_super_kmer: 1, // Will be updated during coalescing
-        };
+        // num_kmers_in_super_kmer is set during coalescing
+        let current_mini = MinimizerTuple::new(mini.value, mini.position, mini.pos_in_kmer as u8);
 
         // Check if this minimizer matches the previous one
         // Per C++ code: check only minimizer and pos_in_seq (NOT pos_in_kmer)
         // See compute_minimizer_tuples.cpp line 99-107
         if let Some(prev) = prev_mini_tuple.take() {
-            if current_mini.minimizer == prev.minimizer && current_mini.pos_in_seq == prev.pos_in_seq {
+            if current_mini.minimizer == prev.minimizer && current_mini.pos_in_seq() == prev.pos_in_seq() {
                 // Same minimizer occurrence - part of same super-k-mer
                 num_kmers_in_super_kmer += 1;
                 prev_mini_tuple = Some(prev);
             } else {
                 // Different minimizer - save previous and start a new one
                 let mut saved = prev;
-                saved.num_kmers_in_super_kmer = num_kmers_in_super_kmer;
+                saved.set_num_kmers_in_super_kmer(num_kmers_in_super_kmer);
                 tuples.push(saved);
 
                 // Start tracking the new minimizer
@@ -230,33 +295,39 @@ where
 
     // Don't forget to save the last accumulated tuple for this string
     if let Some(mut last) = prev_mini_tuple.take() {
-        last.num_kmers_in_super_kmer = num_kmers_in_super_kmer;
+        last.set_num_kmers_in_super_kmer(num_kmers_in_super_kmer);
         tuples.push(last);
     }
-
-    tuples
 }
 
-/// Estimate memory needed for in-memory tuple processing
+/// Expected number of minimizer tuples (super-k-mers), with 25% headroom.
 ///
-/// Returns estimated bytes needed to hold all tuples in memory.
-/// Uses heuristic: ~1 tuple per k-mer on average (conservative).
-pub fn estimate_memory_bytes(total_kmers: u64) -> u64 {
-    // Each tuple is roughly 24 bytes in Rust (with alignment)
-    // Plus sorting needs temporary space (~2x)
-    total_kmers * 24 * 2
+/// With random minimizers a super-k-mer starts at a fraction 2/(w + 1) of the
+/// k-mers, for w = k - m + 1 windows (human, k = 31, m = 19: 0.154 measured
+/// against 0.143 expected).
+pub fn estimate_num_tuples(total_kmers: u64, k: usize, m: usize) -> u64 {
+    let w = k.saturating_sub(m) as f64 + 1.0;
+    (total_kmers as f64 * 2.0 / (w + 1.0) * 1.25) as u64
 }
 
-/// Check if external sorting is needed based on estimated data size and RAM limit
-/// 
-/// Returns false if ram_limit_gib is 0 (meaning unlimited/in-memory)
-pub fn needs_external_sorting(total_kmers: u64, ram_limit_gib: usize) -> bool {
+/// Estimated peak memory of the in-memory build: 16-byte tuples, plus about
+/// as much again for bucket starts, the MPHF order and the offsets.
+pub fn estimate_memory_bytes(total_kmers: u64, k: usize, m: usize) -> u64 {
+    estimate_num_tuples(total_kmers, k, m) * 32
+}
+
+/// Whether to build through external sorting: when the in-memory build is
+/// estimated to exceed `ram_limit_gib` (0 = unlimited), or could hold more
+/// tuples than the in-memory path indexes (2^32).
+pub fn needs_external_sorting(total_kmers: u64, k: usize, m: usize, ram_limit_gib: usize) -> bool {
+    if estimate_num_tuples(total_kmers, k, m) >= u32::MAX as u64 {
+        return true;
+    }
     if ram_limit_gib == 0 {
         return false; // 0 means unlimited, use in-memory sorting
     }
-    let estimated_bytes = estimate_memory_bytes(total_kmers);
     let ram_bytes = (ram_limit_gib as u64) * (GIB as u64);
-    estimated_bytes > ram_bytes
+    estimate_memory_bytes(total_kmers, k, m) > ram_bytes
 }
 
 /// Compute minimizer tuples using external sorting (RAM-bounded)
@@ -499,9 +570,9 @@ mod tests {
     fn test_minimizer_tuple_creation() {
         let tuple = MinimizerTuple::new(12345, 100, 5);
         assert_eq!(tuple.minimizer, 12345);
-        assert_eq!(tuple.pos_in_seq, 100);
-        assert_eq!(tuple.pos_in_kmer, 5);
-        assert_eq!(tuple.num_kmers_in_super_kmer, 1);
+        assert_eq!(tuple.pos_in_seq(), 100);
+        assert_eq!(tuple.pos_in_kmer(), 5);
+        assert_eq!(tuple.num_kmers_in_super_kmer(), 1);
     }
     
     #[test]
@@ -535,8 +606,8 @@ mod tests {
         
         // Should have exactly 1 tuple (1 k-mer)
         assert_eq!(tuples.len(), 1);
-        assert!(tuples[0].pos_in_seq < sequence.len() as u64);
-        assert_eq!(tuples[0].num_kmers_in_super_kmer, 1);
+        assert!(tuples[0].pos_in_seq() < sequence.len() as u64);
+        assert_eq!(tuples[0].num_kmers_in_super_kmer(), 1);
     }
     
     #[test]
@@ -562,7 +633,7 @@ mod tests {
         // In canonical mode, pos_in_kmer should be adjusted when RC minimizer wins
         // This is a structural test - the actual values depend on the hashing
         for tuple in &tuples {
-            assert!(tuple.pos_in_kmer <= (31 - 13) as u8);
+            assert!(tuple.pos_in_kmer() <= (31 - 13) as u8);
         }
     }
 }

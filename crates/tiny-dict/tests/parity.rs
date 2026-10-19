@@ -21,13 +21,9 @@ fn random_dna(rng: &mut StdRng, len: usize) -> String {
 }
 
 fn build_sshash(sequences: Vec<String>) -> sshash_lib::Dictionary {
-    let config = BuildConfiguration {
-        k: K,
-        m: M,
-        num_threads: 1,
-        verbose: false,
-        ..BuildConfiguration::default()
-    };
+    let mut config = BuildConfiguration::new(K, M).expect("build config");
+    config.num_threads = 1;
+    config.verbose = false;
     let builder = DictionaryBuilder::new(config).expect("build config");
     builder
         .build_from_sequences(sequences)

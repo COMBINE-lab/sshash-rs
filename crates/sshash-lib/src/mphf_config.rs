@@ -185,6 +185,77 @@ pub const STREAMING_SWEEP_CHUNKS: usize = 8;
 /// which is more than in-memory construction below ~16M keys.
 pub const OFFLINE_MIN_KEYS: usize = 1 << 24;
 
+/// How the minimizer MPHF of an index is built.
+///
+/// Every strategy produces a valid index in the same file format; they differ
+/// in build time, build memory, temporary disk and query speed (and hence in
+/// the exact bytes of the index). Each one is deterministic: the index does
+/// not depend on `num_threads`.
+///
+/// Human genome scale (178M minimizers), MPHF construction alone:
+///
+/// | strategy | build, 1 / 8 / 32 threads | extra memory | temp disk | lookup |
+/// |---|---|---|---|---|
+/// | `Streaming(Offline::Auto)` | 8.7 / 3.0 / 3.0 s | 0.27 GB | 16 B/key | ~20 ns |
+/// | `Streaming(Offline::Never)` | 8.0 / 2.6 / 2.6 s | ~27 B/key | none | ~20 ns |
+/// | `InMemory` | 7.2 / 1.0 / 0.9 s | ~8 B/key + ~20 B/key working | none | ~20 ns |
+/// | `Partitioned` | 7.7 / 1.4 / 0.7 s | ~8 B/key + 3M keys per thread | none | ~25 ns |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MphfBuild {
+    /// One function, built by streaming the (sorted, distinct) keys once
+    /// without materializing them. Construction records are kept in memory or
+    /// in temporary files in `BuildConfiguration::tmp_dirname` according to
+    /// [`Offline`]. The default.
+    Streaming(Offline),
+    /// One function, built from an in-memory copy of the keys on the build
+    /// pool. Fastest single-function build, no temporary disk.
+    InMemory,
+    /// Keys split into partitions of ~3M keys, built `num_threads` at a time.
+    /// No temporary disk and the fastest build at high thread counts, but
+    /// ~25% slower lookups and a slightly larger function.
+    Partitioned,
+}
+
+impl Default for MphfBuild {
+    fn default() -> Self {
+        MphfBuild::Streaming(Offline::default())
+    }
+}
+
+/// Where [`MphfBuild::Streaming`] keeps its construction records (16 bytes
+/// per key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offline {
+    /// In temporary files from `min_keys` keys on, in memory below. Offline
+    /// construction has ~256 MiB of fixed buffers, so it only saves memory
+    /// above ~16M keys. The default is `min_keys = OFFLINE_MIN_KEYS` (2^24).
+    Auto {
+        /// Smallest key count built offline.
+        min_keys: usize,
+    },
+    /// Always in temporary files (least memory).
+    Always,
+    /// Always in memory (no temporary disk).
+    Never,
+}
+
+impl Default for Offline {
+    fn default() -> Self {
+        Offline::Auto { min_keys: OFFLINE_MIN_KEYS }
+    }
+}
+
+impl Offline {
+    /// Whether a set of `num_keys` keys is built offline.
+    pub fn is_offline(self, num_keys: usize) -> bool {
+        match self {
+            Offline::Auto { min_keys } => num_keys >= min_keys,
+            Offline::Always => true,
+            Offline::Never => false,
+        }
+    }
+}
+
 /// Lends the bytes of each key of an iterator, for PHastR's lender-based
 /// constructors.
 struct KeyLender<I: Iterator<Item: MphfKey>> {
@@ -210,22 +281,20 @@ impl<I: Iterator<Item: MphfKey>> FallibleLender for KeyLender<I> {
 /// Build an MPHF by streaming distinct keys, which are read once and never
 /// materialized.
 ///
-/// With at least [`OFFLINE_MIN_KEYS`] keys (`num_keys_hint`), the 16-byte
-/// per-key construction records go to unlinked temporary files in `tmp_dir`
-/// (about 1.5 bytes/key of memory, 16 bytes/key of disk); otherwise they are
-/// kept in memory. Construction runs on the current rayon pool with
-/// [`STREAMING_SWEEP_CHUNKS`] sweep chunks, so the result does not depend on
-/// the caller's thread count.
+/// With `offline`, the 16-byte per-key construction records go to unlinked
+/// temporary files in `tmp_dir` (about 1.5 bytes/key of memory, 16 bytes/key
+/// of disk); otherwise they are kept in memory. Construction runs on the
+/// current rayon pool with [`STREAMING_SWEEP_CHUNKS`] sweep chunks, so the
+/// result does not depend on the caller's thread count.
 ///
 /// # Panics
 ///
 /// If the keys contain duplicates, or offline construction fails (e.g., the
 /// temporary directory is not writable).
-pub fn build_mphf_streaming<I>(keys: I, num_keys_hint: usize, tmp_dir: &Path) -> Mphf
+pub fn build_mphf_streaming<I>(keys: I, offline: bool, tmp_dir: &Path) -> Mphf
 where
     I: Iterator<Item: MphfKey> + Send,
 {
-    let offline = num_keys_hint >= OFFLINE_MIN_KEYS;
     let mut builder = PHastRBuilder::default()
         .offline(offline)
         .sweep_chunks(STREAMING_SWEEP_CHUNKS);
@@ -237,6 +306,20 @@ where
     }
     Mphf::try_new_with_builder(KeyLender { iter: keys, cur: None }, builder, no_logging![])
         .unwrap_or_else(|e| panic!("streamed MPHF construction failed: {e:#}"))
+}
+
+/// Build an MPHF from the bytes of a set of distinct keys on the current
+/// rayon pool, with [`STREAMING_SWEEP_CHUNKS`] sweep chunks so that the
+/// result does not depend on the pool's size (unlike [`build_mphf`], which
+/// builds on a single thread for the same reason).
+///
+/// # Panics
+///
+/// If the keys contain duplicates.
+pub fn build_mphf_parallel<B: Borrow<KeyBytes> + Sync>(keys: &[B]) -> Mphf {
+    let builder = PHastRBuilder::default().sweep_chunks(STREAMING_SWEEP_CHUNKS);
+    Mphf::try_par_new_with_builder(keys, builder, no_logging![])
+        .unwrap_or_else(|e| panic!("MPHF construction failed on {} keys: {e:#}", keys.len()))
 }
 
 fn single_thread_pool() -> rayon::ThreadPool {

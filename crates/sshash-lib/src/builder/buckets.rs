@@ -3,6 +3,7 @@
 //! This module classifies minimizer buckets into singleton, light (sparse),
 //! and heavy (skew) categories based on bucket size.
 
+use rayon::prelude::*;
 use crate::builder::minimizer_tuples::MinimizerTuple;
 use crate::constants::MIN_L;
 use tracing::info;
@@ -66,7 +67,7 @@ impl BucketStatistics {
         self.num_buckets += 1;
         // Forward scheme: one tuple per minimizer position (enforced during
         // classification/merge), so the size is just the tuple count.
-        debug_assert!(bucket.windows(2).all(|p| p[0].pos_in_seq != p[1].pos_in_seq));
+        debug_assert!(bucket.windows(2).all(|p| p[0].pos_in_seq() != p[1].pos_in_seq()));
         let bucket_size: usize = bucket.len();
 
         if bucket_size > self.max_bucket_size {
@@ -75,7 +76,7 @@ impl BucketStatistics {
         
         // Count total k-mers in this bucket
         let kmers_in_bucket: u64 = bucket.iter()
-            .map(|mt| mt.num_kmers_in_super_kmer as u64)
+            .map(|mt| mt.num_kmers_in_super_kmer() as u64)
             .sum();
         self.num_kmers += kmers_in_bucket;
         
@@ -241,102 +242,104 @@ pub fn classify_into_buckets(tuples: Vec<MinimizerTuple>) -> Vec<Bucket> {
 // In-place (zero-copy) bucket classification
 // ---------------------------------------------------------------------------
 
-/// Lightweight bucket descriptor referencing a range in a sorted tuples array.
+/// In-place classified buckets: the sorted tuple array plus the index of the
+/// first tuple of each bucket.
 ///
-/// Unlike [`Bucket`], this does not own the tuples — it references them by
-/// index into the parent [`ClassifiedBuckets::tuples`] vector.
-#[derive(Debug, Clone, Copy)]
-pub struct BucketRef {
-    /// The minimizer value for this bucket.
-    pub minimizer: u64,
-    /// Start index (inclusive) in the tuples array.
-    pub start: usize,
-    /// Number of tuples in this bucket.
-    pub len: usize,
-    /// Number of unique super-kmers (distinct `pos_in_seq` values).
-    pub cached_size: usize,
-    /// Bucket type classification.
-    pub bucket_type: BucketType,
-}
-
-/// In-place classified buckets: owns a sorted tuple array plus lightweight
-/// bucket descriptors.
-///
-/// This avoids the memory duplication of [`classify_into_buckets`] which
-/// moves every tuple into per-bucket `Vec`s (briefly doubling memory for
-/// the tuple payload).
+/// A bucket is the run of tuples sharing a minimizer, so its minimizer,
+/// size (one tuple per super-k-mer, as the minimizer scheme is forward) and
+/// type are derived from the tuples and these 4-byte starts, instead of being
+/// stored per bucket (178M buckets for a human index).
 pub struct ClassifiedBuckets {
-    /// The original sorted tuples — never moved or copied.
+    /// The sorted tuples — never moved or copied.
     pub tuples: Vec<MinimizerTuple>,
-    /// One descriptor per unique minimizer, in the same order as the tuples.
-    pub bucket_refs: Vec<BucketRef>,
+    /// `starts[i]` is the index of bucket `i`'s first tuple;
+    /// `starts[num_buckets] = tuples.len()`.
+    starts: Vec<u32>,
 }
 
 impl ClassifiedBuckets {
     /// Number of buckets (unique minimizers).
     #[inline]
     pub fn num_buckets(&self) -> usize {
-        self.bucket_refs.len()
+        self.starts.len() - 1
     }
 
     /// Get the tuple slice for bucket at index `idx`.
     #[inline]
     pub fn bucket_tuples(&self, idx: usize) -> &[MinimizerTuple] {
-        let bref = &self.bucket_refs[idx];
-        &self.tuples[bref.start..bref.start + bref.len]
+        &self.tuples[self.starts[idx] as usize..self.starts[idx + 1] as usize]
+    }
+
+    /// Number of super-k-mers (tuples) in bucket `idx`.
+    #[inline]
+    pub fn bucket_size(&self, idx: usize) -> usize {
+        (self.starts[idx + 1] - self.starts[idx]) as usize
+    }
+
+    /// Minimizer of bucket `idx`.
+    #[inline]
+    pub fn bucket_minimizer(&self, idx: usize) -> u64 {
+        self.tuples[self.starts[idx] as usize].minimizer
+    }
+
+    /// Type of bucket `idx`.
+    #[inline]
+    pub fn bucket_type(&self, idx: usize) -> BucketType {
+        BucketType::from_bucket_size(self.bucket_size(idx))
+    }
+
+    /// The bucket minimizers, in bucket order (sorted, distinct).
+    pub fn minimizers(&self) -> impl Iterator<Item = u64> + Clone + Send + '_ {
+        self.starts[..self.num_buckets()]
+            .iter()
+            .map(|&s| self.tuples[s as usize].minimizer)
     }
 }
 
 /// Classify sorted minimizer tuples into buckets **in place**, without
 /// copying or moving the tuple data.
 ///
-/// Returns a [`ClassifiedBuckets`] that owns the original tuples vector
-/// and provides lightweight [`BucketRef`] descriptors.
+/// # Panics
+///
+/// If there are 2^32 or more tuples, or a minimizer occurs twice at the same
+/// position (the minimizer scheme is not forward).
 pub fn classify_into_buckets_inplace(tuples: Vec<MinimizerTuple>) -> ClassifiedBuckets {
+    assert!(
+        tuples.len() < u32::MAX as usize,
+        "{} minimizer tuples: the in-memory build supports fewer than 2^32",
+        tuples.len()
+    );
     if tuples.is_empty() {
-        return ClassifiedBuckets {
-            tuples,
-            bucket_refs: Vec::new(),
-        };
+        return ClassifiedBuckets { tuples, starts: vec![0] };
     }
 
-    let mut bucket_refs = Vec::new();
-    let mut start = 0usize;
-    let mut current_minimizer = tuples[0].minimizer;
-
+    // Count the buckets (and check the scheme is forward) in parallel, then
+    // record each bucket's start in an exactly sized vector.
+    let num_buckets = 1 + tuples
+        .par_windows(2)
+        .filter(|w| {
+            let (a, b) = (&w[0], &w[1]);
+            assert!(
+                a.minimizer != b.minimizer || a.pos_in_seq() != b.pos_in_seq(),
+                "the minimizer scheme is not forward: (minimizer {:#x}, pos_in_seq {}) \
+                 occurs in more than one super-kmer",
+                a.minimizer,
+                a.pos_in_seq()
+            );
+            a.minimizer != b.minimizer
+        })
+        .count();
+    let mut starts = Vec::with_capacity(num_buckets + 1);
+    starts.push(0u32);
     for i in 1..tuples.len() {
-        if tuples[i].minimizer != current_minimizer {
-            let len = i - start;
-            let (cached_size, bucket_type) =
-                compute_bucket_size_from_slice(&tuples[start..i]);
-            bucket_refs.push(BucketRef {
-                minimizer: current_minimizer,
-                start,
-                len,
-                cached_size,
-                bucket_type,
-            });
-            current_minimizer = tuples[i].minimizer;
-            start = i;
+        if tuples[i].minimizer != tuples[i - 1].minimizer {
+            starts.push(i as u32);
         }
     }
+    starts.push(tuples.len() as u32);
+    debug_assert_eq!(starts.len(), num_buckets + 1);
 
-    // Last bucket
-    let len = tuples.len() - start;
-    let (cached_size, bucket_type) =
-        compute_bucket_size_from_slice(&tuples[start..]);
-    bucket_refs.push(BucketRef {
-        minimizer: current_minimizer,
-        start,
-        len,
-        cached_size,
-        bucket_type,
-    });
-
-    ClassifiedBuckets {
-        tuples,
-        bucket_refs,
-    }
+    ClassifiedBuckets { tuples, starts }
 }
 
 /// Size and classify a bucket from a (sorted) tuple slice.
@@ -350,10 +353,10 @@ pub fn classify_into_buckets_inplace(tuples: Vec<MinimizerTuple>) -> ClassifiedB
 fn compute_bucket_size_from_slice(tuples: &[MinimizerTuple]) -> (usize, BucketType) {
     for pair in tuples.windows(2) {
         assert_ne!(
-            pair[0].pos_in_seq, pair[1].pos_in_seq,
+            pair[0].pos_in_seq(), pair[1].pos_in_seq(),
             "the minimizer scheme is not forward: (minimizer {:#x}, pos_in_seq {}) \
              occurs in more than one super-kmer",
-            pair[0].minimizer, pair[0].pos_in_seq
+            pair[0].minimizer, pair[0].pos_in_seq()
         );
     }
     (tuples.len(), BucketType::from_bucket_size(tuples.len()))

@@ -3,162 +3,8 @@
 //! Maps minimizer values to their control information using a minimal perfect hash function.
 //! This provides O(1) lookup of metadata associated with each unique minimizer.
 
-use rapidhash::HashMapExt;
-
 use crate::partitioned_mphf::PartitionedMphf;
 use std::io;
-use tracing::info;
-
-/// Control information associated with a minimizer
-#[derive(Clone, Copy, Debug)]
-pub struct MinimizerControl {
-    /// Number of strings containing this minimizer
-    pub count: u32,
-    /// Bucket type (regular, sparse, or heavy-load)
-    pub bucket_type: BucketType,
-    /// Additional metadata
-    pub metadata: u64,
-}
-
-/// Classification of minimizer buckets by density
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
-pub enum BucketType {
-    /// Regular bucket: few strings contain this minimizer
-    #[default]
-    Regular,
-    /// Sparse bucket: moderately populated
-    Sparse,
-    /// Heavy-load bucket: many strings contain this minimizer
-    HeavyLoad,
-}
-
-
-/// Builder for constructing a MinimizersControlMap
-///
-/// This two-phase builder collects minimizers during construction,
-/// then builds the MPHF once all minimizers are known.
-pub struct MinimizersControlMapBuilder {
-    /// Minimizers collected during building (stable order for MPHF)
-    minimizers: Vec<u64>,
-    /// Control information for each minimizer (parallel to minimizers vec)
-    controls: Vec<MinimizerControl>,
-    /// O(1) lookup: minimizer value → index in minimizers/controls vecs
-    index: rapidhash::RapidHashMap<u64, usize>,
-}
-
-impl MinimizersControlMapBuilder {
-    /// Create a new builder
-    pub fn new() -> Self {
-        Self {
-            minimizers: Vec::new(),
-            controls: Vec::new(),
-            index: rapidhash::RapidHashMap::new(),
-        }
-    }
-
-    /// Add a minimizer with initial control info
-    pub fn add_minimizer(&mut self, minimizer: u64) -> usize {
-        if let Some(&pos) = self.index.get(&minimizer) {
-            return pos;
-        }
-
-        let id = self.minimizers.len();
-        self.minimizers.push(minimizer);
-        self.controls.push(MinimizerControl {
-            count: 0,
-            bucket_type: BucketType::Regular,
-            metadata: 0,
-        });
-        self.index.insert(minimizer, id);
-        id
-    }
-
-    /// Increment count for a minimizer
-    pub fn increment_count(&mut self, minimizer: u64) {
-        let id = self.add_minimizer(minimizer);
-        self.controls[id].count = self.controls[id].count.saturating_add(1);
-    }
-
-    /// Set bucket type for a minimizer
-    pub fn set_bucket_type(&mut self, minimizer: u64, bucket_type: BucketType) {
-        let id = self.add_minimizer(minimizer);
-        self.controls[id].bucket_type = bucket_type;
-    }
-
-    /// Get mutable access to control info for a minimizer
-    pub fn get_control_mut(&mut self, minimizer: u64) -> Option<&mut MinimizerControl> {
-        self.index
-            .get(&minimizer)
-            .copied()
-            .map(|idx| &mut self.controls[idx])
-    }
-
-    /// Classify bucket types based on count thresholds
-    pub fn finalize_bucket_types(&mut self, threshold_sparse: u32, threshold_heavy: u32) {
-        for control in &mut self.controls {
-            control.bucket_type = if control.count > threshold_heavy {
-                BucketType::HeavyLoad
-            } else if control.count > threshold_sparse {
-                BucketType::Sparse
-            } else {
-                BucketType::Regular
-            };
-        }
-    }
-
-    /// Build the final MinimizersControlMap with MPHF
-    ///
-    /// Returns the control map AND a mapping from MPHF index to bucket_id.
-    /// This mapping is used to reorder control_codewords to MPHF order.
-    ///
-    /// # Arguments
-    /// * `c` - Relative level size (percentage, typically 100)
-    /// * `alpha` - Load factor (kept for C++ API parity, not used by ph)
-    /// * `partitioned` - Whether to use partitioned MPHF (parallel build)
-    pub fn build(self, _c: u16, _alpha: f64, partitioned: bool) -> io::Result<(MinimizersControlMap, Vec<usize>)> {
-        if self.minimizers.is_empty() {
-            return Ok((MinimizersControlMap {
-                mphf: None,
-                num_keys: 0,
-            }, Vec::new()));
-        }
-
-        let minimizers = self.minimizers;
-        let controls = self.controls;
-        let num_keys = minimizers.len() as u64;
-
-        info!("Building PHastR MPHF for {} minimizers (partitioned={})", num_keys, partitioned);
-
-        // Build the MPHF using PartitionedMphf
-        let mphf = PartitionedMphf::build_from_vec(minimizers.clone(), partitioned);
-
-        // Build mapping: bucket_id_by_mphf_index[mphf_index] = bucket_id (= metadata)
-        let mut bucket_id_by_mphf_index = vec![0usize; controls.len()];
-        for (idx, minimizer) in minimizers.iter().enumerate() {
-            let pos = mphf.get(minimizer);
-            if pos < bucket_id_by_mphf_index.len() {
-                bucket_id_by_mphf_index[pos] = controls[idx].metadata as usize;
-            }
-        }
-
-        Ok((MinimizersControlMap {
-            mphf: Some(mphf),
-            num_keys,
-        }, bucket_id_by_mphf_index))
-    }
-
-    /// Get the number of unique minimizers
-    pub fn num_minimizers(&self) -> usize {
-        self.minimizers.len()
-    }
-}
-
-impl Default for MinimizersControlMapBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Minimizers Control Map
 ///
@@ -173,29 +19,15 @@ pub struct MinimizersControlMap {
 }
 
 impl MinimizersControlMap {
-    /// Create a MinimizersControlMap from existing parts (for testing)
-    pub fn from_parts(
-        _controls: Vec<MinimizerControl>,
-        minimizers: Vec<u64>,
-        num_keys: u64,
-    ) -> Self {
-        // Build MPHF if we have minimizers
-        let mphf = if !minimizers.is_empty() {
-            Some(PartitionedMphf::build_from_vec(minimizers, false))
-        } else {
-            None
-        };
-
-        Self {
-            mphf,
-            num_keys,
-        }
+    /// An empty map (no minimizers).
+    pub fn empty() -> Self {
+        Self { mphf: None, num_keys: 0 }
     }
 
     /// Create a MinimizersControlMap from a pre-built MPHF.
     ///
-    /// Used by the external sort build path which builds the MPHF directly
-    /// without going through MinimizersControlMapBuilder.
+    /// The builder builds the MPHF of the bucket minimizers (see
+    /// [`crate::MphfBuild`]) and wraps it here.
     pub fn from_mphf(mphf: PartitionedMphf, num_keys: u64) -> Self {
         Self {
             mphf: Some(mphf),
@@ -284,128 +116,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_minimizers_control_map_builder_creation() {
-        let builder = MinimizersControlMapBuilder::new();
-        assert_eq!(builder.num_minimizers(), 0);
-    }
-
-    #[test]
-    fn test_minimizers_control_map_builder_add() {
-        let mut builder = MinimizersControlMapBuilder::new();
-        
-        let id1 = builder.add_minimizer(100);
-        let id2 = builder.add_minimizer(200);
-        let id3 = builder.add_minimizer(100); // Duplicate
-        
-        assert_eq!(id1, 0);
-        assert_eq!(id2, 1);
-        assert_eq!(id3, 0); // Same as first
-        assert_eq!(builder.num_minimizers(), 2);
-    }
-
-    #[test]
-    fn test_minimizers_control_map_builder_increment() {
-        let mut builder = MinimizersControlMapBuilder::new();
-        
-        builder.increment_count(100);
-        builder.increment_count(100);
-        builder.increment_count(200);
-        
-        assert_eq!(builder.num_minimizers(), 2);
-        assert_eq!(builder.controls[0].count, 2);
-        assert_eq!(builder.controls[1].count, 1);
-    }
-
-    #[test]
-    fn test_minimizers_control_map_builder_bucket_type() {
-        let mut builder = MinimizersControlMapBuilder::new();
-        
-        builder.add_minimizer(100);
-        builder.set_bucket_type(100, BucketType::Sparse);
-        
-        assert_eq!(builder.controls[0].bucket_type, BucketType::Sparse);
-    }
-
-    #[test]
-    fn test_minimizers_control_map_builder_finalize() {
-        let mut builder = MinimizersControlMapBuilder::new();
-        
-        builder.add_minimizer(100);
-        builder.controls[0].count = 5;
-        
-        builder.add_minimizer(200);
-        builder.controls[1].count = 15;
-        
-        builder.add_minimizer(300);
-        builder.controls[2].count = 150;
-        
-        builder.finalize_bucket_types(10, 100);
-        
-        assert_eq!(builder.controls[0].bucket_type, BucketType::Regular);
-        assert_eq!(builder.controls[1].bucket_type, BucketType::Sparse);
-        assert_eq!(builder.controls[2].bucket_type, BucketType::HeavyLoad);
-    }
-
-    #[test]
-    fn test_minimizers_control_map_build_empty() {
-        let builder = MinimizersControlMapBuilder::new();
-        let (mcm, mapping) = builder.build(100, 0.94, false).unwrap();
-        
+    fn test_empty() {
+        let mcm = MinimizersControlMap::empty();
         assert_eq!(mcm.num_minimizers(), 0);
-        assert!(mcm.mphf.is_none());
-        assert!(mapping.is_empty());
+        assert!(mcm.mphf_ref().is_none());
+        assert_eq!(mcm.lookup(100), None);
+        assert_eq!(mcm.num_bits(), 0);
     }
 
     #[test]
-    fn test_minimizers_control_map_build_and_lookup() {
-        let mut builder = MinimizersControlMapBuilder::new();
-        
-        builder.increment_count(100);
-        builder.increment_count(100);
-        builder.increment_count(200);
-        builder.set_bucket_type(100, BucketType::Sparse);
-        
-        let (mcm, _mapping) = builder.build(100, 0.94, false).unwrap();
-        
-        assert_eq!(mcm.num_minimizers(), 2);
-        
-        // lookup now returns Option<usize> (MPHF index)
-        let idx_100 = mcm.lookup(100).unwrap();
-        assert!(idx_100 < 2); // Valid MPHF index
-        
-        let idx_200 = mcm.lookup(200).unwrap();
-        assert!(idx_200 < 2); // Valid MPHF index
-        assert_ne!(idx_100, idx_200); // Different minimizers get different indices
+    fn test_from_mphf_lookup() {
+        let minimizers = [100u64, 200, 300];
+        let mcm = MinimizersControlMap::from_mphf(PartitionedMphf::build_single(&minimizers), 3);
+        assert_eq!(mcm.num_minimizers(), 3);
+        let mut ids: Vec<usize> = minimizers.iter().map(|&m| mcm.lookup(m).unwrap()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [0, 1, 2]);
+        // An absent minimizer still lands in range: callers verify the key
+        assert!(mcm.lookup(400).unwrap() < 3);
     }
 
     #[test]
-    fn test_minimizers_control_map_lookup_missing() {
-        let mut builder = MinimizersControlMapBuilder::new();
-        builder.increment_count(100);
-        
-        let (mcm, _) = builder.build(100, 0.94, false).unwrap();
-        
-        // 300 was never added
-        let _result = mcm.lookup(300);
-        // Note: MPHF might return a value even for keys not in the original set,
-        // but it should be out of bounds or not match expected semantics
-        // For a true membership test, we'd need a separate bloom filter or similar
-    }
-
-    #[test]
-    fn test_bucket_type_default() {
-        let bucket_type = BucketType::default();
-        assert_eq!(bucket_type, BucketType::Regular);
-    }
-
-    #[test]
-    fn test_minimizer_control_default() {
-        let control = MinimizerControl {
-            count: 5,
-            bucket_type: BucketType::Regular,
-            metadata: 0,
-        };
-        assert_eq!(control.count, 5);
-        assert_eq!(control.bucket_type, BucketType::Regular);
+    fn test_serialize_without_mphf_roundtrip() {
+        let mcm = MinimizersControlMap::from_mphf(PartitionedMphf::build_single(&[7u64, 8]), 2);
+        let mut buf = Vec::new();
+        mcm.serialize_without_mphf(&mut buf).unwrap();
+        let back = MinimizersControlMap::deserialize_without_mphf(&mut buf.as_slice()).unwrap();
+        assert_eq!(back.num_minimizers(), 2);
+        assert!(back.mphf_ref().is_none());
     }
 }

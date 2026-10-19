@@ -229,8 +229,16 @@ pub struct EliasFanoOffsets {
 impl EliasFanoOffsets {
     /// Build from a sorted vector of offsets (must start with 0).
     pub fn from_vec(offsets: &[u64]) -> Self {
+        Self::from_iter(offsets.len(), offsets.last().copied().unwrap_or(0), offsets.iter().copied())
+    }
+
+    /// Build from `n` sorted offsets (starting with 0, the last being
+    /// `last`) yielded by a cloneable iterator, which is traversed twice; the
+    /// same as [`Self::from_vec`] on the collected values, without
+    /// materializing them.
+    pub fn from_iter<I: Iterator<Item = u64> + Clone>(n: usize, last: u64, values: I) -> Self {
         let (num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0) =
-            Self::build_darray_ef(offsets);
+            Self::build_darray_ef(n, last, values);
         Self { num_values, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0 }
     }
 
@@ -239,16 +247,18 @@ impl EliasFanoOffsets {
         Self::from_vec(&ov.offsets)
     }
 
-    fn build_darray_ef(values: &[u64]) -> (usize, u32, Vec<u64>, Vec<u64>, usize, usize, DArray, DArray) {
-        let n = values.len();
+    #[allow(clippy::type_complexity)]
+    fn build_darray_ef<I: Iterator<Item = u64> + Clone>(
+        n: usize,
+        max_val: u64,
+        values: I,
+    ) -> (usize, u32, Vec<u64>, Vec<u64>, usize, usize, DArray, DArray) {
         if n == 0 {
             let empty_bv = vec![0u64; 2];
             let da1 = DArray::build(&empty_bv, 0, false);
             let da0 = DArray::build(&empty_bv, 0, true);
             return (0, 0, Vec::new(), empty_bv, 0, 0, da1, da0);
         }
-
-        let max_val = values[n - 1];
 
         let low_bit_width = if n <= 1 || max_val == 0 {
             0
@@ -264,7 +274,7 @@ impl EliasFanoOffsets {
         let low_words = total_low_bits.div_ceil(64) as usize;
         let mut low_bits = vec![0u64; low_words];
         if low_bit_width > 0 {
-            for (i, &v) in values.iter().enumerate() {
+            for (i, v) in values.clone().enumerate() {
                 set_packed_bits(&mut low_bits, i, low_bit_width, v & low_mask);
             }
         }
@@ -275,11 +285,14 @@ impl EliasFanoOffsets {
         let high_words = high_bits_len / 64 + 2; // +2 for scan padding
         let mut high_bits = vec![0u64; high_words];
 
-        for (i, &v) in values.iter().enumerate() {
+        let mut count = 0;
+        for (i, v) in values.enumerate() {
+            count += 1;
             let high = (v >> low_bit_width) as usize;
             let bit_pos = high + i;
             high_bits[bit_pos / 64] |= 1u64 << (bit_pos % 64);
         }
+        assert_eq!(count, n, "EliasFanoOffsets: iterator length differs from n");
 
         let num_high_zeros = max_high as usize;
         let darray1 = DArray::build(&high_bits, high_bits_len, false);
