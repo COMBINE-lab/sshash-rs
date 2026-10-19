@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.0] - unreleased
+## [0.8.0] - 2026-10-19
 
 ### Breaking Changes
 
@@ -15,18 +15,17 @@
 - **One setting for how the minimizer MPHF is built**:
   `BuildConfiguration::mphf_build: MphfBuild` (`Streaming(Offline)`, the
   default, `InMemory` or `Partitioned`; `Offline` is `Auto { min_keys }`,
-  `Always` or `Never`) replaces the `partitioned_mphf` and `streaming_mphf`
-  booleans, whose overlap was silent (`streaming_mphf` overrode
-  `partitioned_mphf`). Every strategy writes the same format and is
-  deterministic in `num_threads`; `Partitioned` reproduces the indices of
-  0.7's `partitioned_mphf` builds byte for byte. `lambda` is deprecated and
-  ignored (PHastR has no such parameter).
+  `Always` or `Never`) replaces the `partitioned_mphf` boolean. Every
+  strategy writes the same format and is deterministic in `num_threads`.
+  `MphfBuild` and `Offline` are `#[non_exhaustive]`.
 - `BuildConfiguration` is `#[non_exhaustive]`: build it with `new(k, m)` or
-  `default()` and set fields, not with a struct literal.
+  `default()` and set fields, not with a struct literal. Its `canonical`
+  field (deprecated and ignored since 0.7.0) is removed; `lambda` is
+  deprecated and ignored (PHastR has no such parameter).
 - `PartitionedMphf`: `build(keys_fn, num_keys, strategy, tmp_dir)` and
-  `build_single(&keys)` replace `build_from_vec`, `build_from_slice` and
-  `build_streaming`. Its key types (and those of `SkewIndex::lookup` and
-  `KmerBits::Storage`) are bound by `MphfKey` instead of `Hash`.
+  `build_single(&keys)` replace `build_from_vec` and `build_from_slice`.
+  Its key types (and those of `SkewIndex::lookup` and `KmerBits::Storage`)
+  are bound by `MphfKey` instead of `Hash`.
 - `mphf_config`: `Mphf` is now `PHastR<KeyBytes>`. Removed `MphfHasher`,
   `mphf_hasher()`, `mphf_params()` and `build_mphf_from_slice` /
   `build_mphf_from_vec` / `build_mphf_from_slice_mt`. Added `MphfBuild`,
@@ -36,15 +35,25 @@
   `mphf_serialized_bytes`, and the `STREAMING_SWEEP_CHUNKS` /
   `OFFLINE_MIN_KEYS` constants.
 - Removed `MinimizersControlMapBuilder`, `MinimizerControl`, the control
-  map's `BucketType` and `MinimizersControlMap::from_parts` (use
-  `from_mphf` or `empty`): the minimizer → bucket hash map they built is gone
+  map's `BucketType` and `MinimizersControlMap::from_parts` (use `from_mphf`
+  or the new `empty`): the minimizer → bucket hash map they built is gone
   (see Performance).
-- Builder internals: `MinimizerTuple` fields other than `minimizer` are
-  accessor methods (`pos_in_seq()`, `pos_in_kmer()`,
-  `num_kmers_in_super_kmer()`); `BucketRef` is removed and
-  `ClassifiedBuckets` exposes `bucket_size`, `bucket_minimizer`,
-  `bucket_type` and `minimizers`; `needs_external_sorting` and
-  `estimate_memory_bytes` take `k` and `m`.
+- Builder internals:
+  - `MinimizerTuple` is 16 bytes: fields other than `minimizer` are accessor
+    methods (`pos_in_seq()`, `pos_in_kmer()`, `num_kmers_in_super_kmer()`),
+    with `with_kmers`, `set_num_kmers_in_super_kmer` and
+    `MAX_POS_IN_SEQ` (2^52) added; it now derives `Ord` (by minimizer, then
+    position, as before) and `Default`.
+  - `BucketRef` and `ClassifiedBuckets::bucket_refs` are removed;
+    `ClassifiedBuckets` exposes `bucket_size`, `bucket_minimizer`,
+    `bucket_type` and `minimizers`.
+  - `SparseAndSkewIndex::build_from_classified` takes the per-bucket MPHF
+    index (`Vec<u32>`) instead of `Option<&[usize]>` (bucket id by MPHF
+    index).
+  - `needs_external_sorting` and `estimate_memory_bytes` take `k` and `m`;
+    new `estimate_num_tuples`.
+  - New `builder::encode::encode_sequences_parallel` and
+    `EliasFanoOffsets::from_iter`.
 - Absent keys: PHastR maps every key, present or not, to an index in range,
   where `ph`'s PHast could return an out-of-range sentinel. sshash's query
   paths verify the key at the returned position, so lookups are unchanged,
@@ -56,13 +65,22 @@
 - `sshash build` options `--mphf streaming|in-memory|partitioned`,
   `--mphf-offline auto|always|never` and `--tmp-dir`.
 
+### Changed
+
+- With the default `MphfBuild`, builds of 2^24 minimizers or more (in-memory
+  path included) write the MPHF's construction records (16 bytes per
+  minimizer, in unlinked temporary files) to `BuildConfiguration::tmp_dirname`,
+  which defaults to the relative directory `sshash_tmp`. The directory is
+  created if absent and not removed afterwards. Use
+  `MphfBuild::Streaming(Offline::Never)`, `InMemory` or `Partitioned` to avoid
+  temporary disk.
+
 ### Performance
 
 Human (178M minimizers, 32 threads), sshash construction only: 40.9 s →
 14.6 s, peak memory 19.1 GB → 7.2 GB; through piscem: 149.6 s / 26.7 GB with
-0.7.1 → 78.2 s / 7.4 GB. Indices are byte-identical to the first 0.8
-builds (and `.ssi.mphf` is 59.5 MB → 54.4 MB against 0.7.1); mapping speed
-is unchanged.
+0.7.1 → 78.2 s / 7.4 GB; `.ssi.mphf` 59.5 MB → 54.4 MB. Mapping speed is
+unchanged.
 
 - The minimizer MPHF is built as one function by streaming the minimizers
   into PHastR (the default), offline in `tmp_dirname` from 2^24 minimizers on

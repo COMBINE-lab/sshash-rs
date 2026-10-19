@@ -77,13 +77,6 @@ impl DictionaryBuilder {
     /// # Returns
     /// A fully constructed Dictionary ready for queries
     pub fn build_from_sequences(&self, sequences: Vec<String>) -> Result<Dictionary, String> {
-        #[allow(deprecated)]
-        if !self.config.canonical {
-            tracing::warn!(
-                "non-canonical (regular) mode was removed in 0.7.0; \
-                 building the unified canonical index"
-            );
-        }
         // Build a rayon thread pool sized to config.num_threads.
         // num_threads == 0 means "all cores" (rayon default).
         let pool = rayon::ThreadPoolBuilder::new()

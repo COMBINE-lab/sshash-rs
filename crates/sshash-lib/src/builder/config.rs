@@ -34,13 +34,7 @@ pub struct BuildConfiguration {
     /// parameter. See [`Self::mphf_build`] for the MPHF options.
     #[deprecated(since = "0.8.0", note = "ignored: the PHastR MPHF has no lambda parameter")]
     pub lambda: f64,
-    
-    /// Ignored since 0.7.0: the index is always canonical (the unified
-    /// C++-v6-style minimizer scheme answers both strands at forward-mode
-    /// cost, so there is no modality to choose).
-    #[deprecated(since = "0.7.0", note = "the index is always canonical; this field is ignored")]
-    pub canonical: bool,
-    
+
     /// How the minimizer MPHF is built (default: streamed as one function,
     /// offline from 2^24 minimizers on). See [`MphfBuild`] for the trade-offs
     /// between build time, build memory, temporary disk and lookup speed.
@@ -72,7 +66,6 @@ impl Default for BuildConfiguration {
             num_threads: 0, // 0 = use all available cores
             ram_limit_gib: 8,
             lambda: 6.0,
-            canonical: true,
             mphf_build: MphfBuild::default(),
             weighted: false,
             verbose: true,

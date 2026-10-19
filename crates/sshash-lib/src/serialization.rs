@@ -473,7 +473,7 @@ pub fn write_mphf_container<W: Write + Seek>(
 
 /// Read PartitionedMphfs from a container format
 ///
-/// Returns a vector of Option<PartitionedMphf> indexed by partition ID
+/// Returns a vector of `Option<PartitionedMphf>` indexed by partition ID
 pub fn read_mphf_container<R: Read + Seek>(
     reader: &mut R,
 ) -> io::Result<Vec<Option<crate::partitioned_mphf::PartitionedMphf>>> {

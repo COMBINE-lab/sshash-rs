@@ -201,6 +201,7 @@ pub const OFFLINE_MIN_KEYS: usize = 1 << 24;
 /// | `InMemory` | 7.2 / 1.0 / 0.9 s | ~8 B/key + ~20 B/key working | none | ~20 ns |
 /// | `Partitioned` | 7.7 / 1.4 / 0.7 s | ~8 B/key + 3M keys per thread | none | ~25 ns |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MphfBuild {
     /// One function, built by streaming the (sorted, distinct) keys once
     /// without materializing them. Construction records are kept in memory or
@@ -225,6 +226,7 @@ impl Default for MphfBuild {
 /// Where [`MphfBuild::Streaming`] keeps its construction records (16 bytes
 /// per key).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Offline {
     /// In temporary files from `min_keys` keys on, in memory below. Offline
     /// construction has ~256 MiB of fixed buffers, so it only saves memory
