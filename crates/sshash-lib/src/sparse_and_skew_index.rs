@@ -65,9 +65,8 @@ impl SparseAndSkewIndex {
     /// all super-kmer positions for the given bucket.
     #[inline]
     pub fn locate_bucket(&self, bucket_id: usize) -> (usize, usize) {
-        let begin = self.num_super_kmers_before_bucket.access(bucket_id) as usize + bucket_id;
-        let end = self.num_super_kmers_before_bucket.access(bucket_id + 1) as usize + bucket_id + 1;
-        (begin, end)
+        let (b, e) = self.num_super_kmers_before_bucket.access_pair(bucket_id);
+        (b as usize + bucket_id, e as usize + bucket_id + 1)
     }
 
     /// Build the sparse and skew index from owned `Bucket` objects (legacy API).
