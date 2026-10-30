@@ -383,23 +383,31 @@ impl MinimizerIterator {
         let begin = self.position;
 
         // First locus peeled off the loop: see `compute_minimizer`.
-        self.min_value = canonical_mmer_at(kmer, kmer_rc, self.m, 0);
-        self.min_hash = self.hasher.hash(self.min_value);
-        self.min_pos_in_kmer = 0;
-        self.num_mins = 1;
+        let mut min_value = canonical_mmer_at(kmer, kmer_rc, self.m, 0);
+        let mut min_hash = self.hasher.hash(min_value);
+        let mut min_pos_in_kmer = 0;
+        let mut num_mins = 1u64;
 
         // Branchless running-min update (leftmost anchoring; ties resolved by
         // the caller) — see compute_minimizer for the mispredict rationale.
+        // Kept in locals and chosen with `select_unpredictable`: written as
+        // plain `if`s on the fields, LLVM emitted a branch on `lt` (7.5% of
+        // all conditional-branch mispredicts in a salmon --sketch run on an
+        // Apple M5).
         for i in 1..=self.window_size {
             let value = canonical_mmer_at(kmer, kmer_rc, self.m, i);
             let hash = self.hasher.hash(value);
-            let lt = hash < self.min_hash;
-            let eq = hash == self.min_hash;
-            self.min_hash = if lt { hash } else { self.min_hash };
-            self.min_value = if lt { value } else { self.min_value };
-            self.min_pos_in_kmer = if lt { i } else { self.min_pos_in_kmer };
-            self.num_mins = if lt { 1 } else { self.num_mins + eq as u64 };
+            let lt = hash < min_hash;
+            let eq = hash == min_hash;
+            min_hash = std::hint::select_unpredictable(lt, hash, min_hash);
+            min_value = std::hint::select_unpredictable(lt, value, min_value);
+            min_pos_in_kmer = std::hint::select_unpredictable(lt, i, min_pos_in_kmer);
+            num_mins = std::hint::select_unpredictable(lt, 1, num_mins + eq as u64);
         }
+        self.min_value = min_value;
+        self.min_hash = min_hash;
+        self.min_pos_in_kmer = min_pos_in_kmer;
+        self.num_mins = num_mins;
 
         self.position = begin + self.window_size as u64;
         self.min_position = begin + self.min_pos_in_kmer as u64;
