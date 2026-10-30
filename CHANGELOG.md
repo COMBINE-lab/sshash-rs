@@ -22,6 +22,13 @@ Query-side only: the index format and every query result are unchanged.
 In salmon `--sketch` (SRR13638690 / GENCODE v50) these cut mapping time by
 ~2–3% on Apple M5 and up to ~3% on x86-64, with byte-identical output.
 
+### Dependencies
+
+- sux is used without its default features (`epserde` and `rayon` only):
+  sshash never used sux's gzip/zstd line readers, and their `flate2`/`zstd`
+  0.13 dependencies are dropped from dependents' trees (zstd 0.13 carries the
+  RustSec advisories of 2026-10-16).
+
 ## [0.8.0] - 2026-10-19
 
 ### Breaking Changes
