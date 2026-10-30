@@ -328,6 +328,59 @@ impl EliasFanoOffsets {
         (high << self.low_bit_width) | low
     }
 
+    /// Get the offsets at indices `i` and `i + 1` (requires `i + 1 < len`).
+    ///
+    /// One select instead of two: element `i + 1`'s high part sits at the
+    /// next one of `high_bits` after element `i`'s.
+    #[inline]
+    pub fn access_pair(&self, i: usize) -> (u64, u64) {
+        debug_assert!(i + 1 < self.num_values);
+        let p = self.darray1.select(&self.high_bits, i as u64, false);
+        let q = self.next_one_after(p);
+        let a = ((p - i as u64) << self.low_bit_width) | self.get_low_bits(i);
+        let b = ((q - i as u64 - 1) << self.low_bit_width) | self.get_low_bits(i + 1);
+        (a, b)
+    }
+
+    /// Position of the first one of `high_bits` at or after bit `p`; the
+    /// caller guarantees one exists.
+    #[inline(always)]
+    fn next_one_from(&self, p: u64) -> u64 {
+        let mut w = (p >> 6) as usize;
+        let mut word = self.high_bits[w] & (u64::MAX << (p & 63));
+        while word == 0 {
+            w += 1;
+            word = self.high_bits[w];
+        }
+        ((w as u64) << 6) | word.trailing_zeros() as u64
+    }
+
+    /// Position of the first one of `high_bits` after bit `p`; the caller
+    /// guarantees one exists.
+    #[inline(always)]
+    fn next_one_after(&self, p: u64) -> u64 {
+        let mut w = (p >> 6) as usize;
+        let mut word = self.high_bits[w] & ((u64::MAX << (p & 63)) << 1);
+        while word == 0 {
+            w += 1;
+            word = self.high_bits[w];
+        }
+        ((w as u64) << 6) | word.trailing_zeros() as u64
+    }
+
+    /// Position of the last one of `high_bits` before bit `p`; the caller
+    /// guarantees one exists.
+    #[inline(always)]
+    fn prev_one_before(&self, p: u64) -> u64 {
+        let mut w = (p >> 6) as usize;
+        let mut word = self.high_bits[w] & ((1u64 << (p & 63)) - 1);
+        while word == 0 {
+            w -= 1;
+            word = self.high_bits[w];
+        }
+        ((w as u64) << 6) | (63 - word.leading_zeros() as u64)
+    }
+
     /// Locate which string contains a given absolute position, returning
     /// `(string_id, string_begin, string_end)`.
     #[inline]
@@ -339,35 +392,45 @@ impl EliasFanoOffsets {
 
         let h = pos >> self.low_bit_width;
 
-        let start = if h == 0 {
-            0
+        // `start` is the first element whose high part is >= h, and `q` the
+        // position of its one in `high_bits`: the first one after the
+        // (h-1)-th zero, since exactly `start` ones precede that zero.
+        let (start, s0) = if h == 0 {
+            (0, None)
         } else if (h - 1) < self.num_high_zeros as u64 {
             let s0 = self.darray0.select(&self.high_bits, h - 1, true);
-            (s0 + 1 - h) as usize
+            ((s0 + 1 - h) as usize, Some(s0))
         } else {
             return None;
         };
+        if start >= n {
+            return None;
+        }
 
-        // Linear scan from `start`, caching the two boundary offsets as we go.
-        // Each `access` is a full Elias-Fano select; the original recomputed
-        // `access(string_id)` and `access(string_id + 1)` in the return even
-        // though the scan had just evaluated them. We keep the last `<= pos`
-        // value (`prev_access`, which becomes `access(string_id)`) and the
-        // first `> pos` value that breaks the loop (`break_access`, which is
-        // `access(string_id + 1)`), so a successful locate does ~half as many
-        // selects. Results are identical (verified by the brute-force stress
-        // tests below).
+        // Linear scan from `start`, keeping the last value `<= pos`
+        // (`access(string_id)`) and the first `> pos` (`access(string_id +
+        // 1)`). Consecutive elements are consecutive ones of `high_bits`, so
+        // the scan walks bits instead of doing an Elias-Fano select per
+        // element. Results are identical (brute-force stress tests below).
+        let mut q = match s0 {
+            None => self.next_one_from(0),
+            Some(s0) => self.next_one_after(s0),
+        };
         let mut idx = start;
         let mut prev_access = 0u64;
         let mut break_access = 0u64;
-        while idx < n {
-            let a = self.access(idx);
+        loop {
+            let a = ((q - idx as u64) << self.low_bit_width) | self.get_low_bits(idx);
             if a > pos {
                 break_access = a;
                 break;
             }
             prev_access = a;
             idx += 1;
+            if idx == n {
+                break;
+            }
+            q = self.next_one_after(q);
         }
 
         if idx == 0 {
@@ -378,9 +441,15 @@ impl EliasFanoOffsets {
             // Reaching here means `idx == string_id + 1 < n`, so the scan broke
             // via `a > pos` and `break_access == access(string_id + 1)`.
             // `access(string_id)` is `prev_access` when the loop advanced at
-            // least once (`idx > start`); on an immediate break the index
-            // `string_id == start - 1` was never visited, so read it directly.
-            let begin = if idx > start { prev_access } else { self.access(string_id) };
+            // least once (`idx > start`); on an immediate break the element
+            // `string_id == start - 1` was never visited: its one is the last
+            // before the (h-1)-th zero (`start >= 1` implies `h >= 1`).
+            let begin = if idx > start {
+                prev_access
+            } else {
+                let p = self.prev_one_before(s0.unwrap());
+                ((p - string_id as u64) << self.low_bit_width) | self.get_low_bits(string_id)
+            };
             Some((string_id as u64, begin, break_access))
         } else {
             None
@@ -647,6 +716,43 @@ mod ef_tests {
             };
             let got = ef.locate_with_end(pos);
             assert_eq!(got, expected, "locate_with_end({pos}) mismatch");
+        }
+    }
+
+    /// Randomized check of `access_pair` and `locate_with_end` against brute
+    /// force, over sequences long enough to span DArray blocks (including
+    /// overflow blocks), with repeated values and gaps of every scale.
+    #[test]
+    fn test_ef_access_pair_and_locate_random() {
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for (n, max_gap, dup_every) in [(5000usize, 4u64, 3u64), (20000, 64, 0), (3000, 1 << 20, 5), (40000, 2, 2)] {
+            let mut offsets = vec![0u64];
+            for _ in 1..n {
+                let g = if dup_every != 0 && rnd() % dup_every == 0 { 0 } else { 1 + rnd() % max_gap };
+                offsets.push(offsets.last().unwrap() + g);
+            }
+            let ef = EliasFanoOffsets::from_vec(&offsets);
+            for i in 0..n - 1 {
+                assert_eq!(ef.access_pair(i), (offsets[i], offsets[i + 1]), "access_pair({i})");
+            }
+            let universe = *offsets.last().unwrap();
+            let brute = |pos: u64| {
+                let idx = offsets.partition_point(|&v| v <= pos);
+                (idx > 0 && idx < n).then(|| ((idx - 1) as u64, offsets[idx - 1], offsets[idx]))
+            };
+            let mut probes: Vec<u64> = (0..20000).map(|_| rnd() % (universe + 2)).collect();
+            for &v in offsets.iter().step_by(7) {
+                probes.extend([v.saturating_sub(1), v, v + 1]);
+            }
+            for pos in probes {
+                assert_eq!(ef.locate_with_end(pos), brute(pos), "locate_with_end({pos}), n={n}");
+            }
         }
     }
 }

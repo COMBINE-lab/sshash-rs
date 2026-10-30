@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.8.1] - 2026-10-30
+
+### Performance
+
+Query-side only: the index format and every query result are unchanged.
+
+- **In-word select without PDEP** (`DArray`): on aarch64, and on x86-64
+  without BMI2, the k-th set bit of a word is now found from per-byte prefix
+  popcounts (one multiplication) and a 2 KiB table, instead of six dependent
+  popcounts. In isolation, ~43% lower latency on Apple M5 and ~39% on x86-64
+  without BMI2; x86-64 with BMI2 keeps PDEP.
+- **Elias–Fano adjacent pairs**: `EliasFanoOffsets::access_pair(i)` reads
+  elements `i` and `i + 1` with one select (the second is the next one bit),
+  used by `SparseAndSkewIndex` bucket bounds; `locate_with_end` walks
+  consecutive ones of the high bits instead of doing a select per element.
+- **Branch-free minimizer rescan**: `MinimizerIterator`'s re-scan keeps its
+  running minimum in locals chosen with `select_unpredictable`, removing a
+  frequently mispredicted branch.
+
+In salmon `--sketch` (SRR13638690 / GENCODE v50) these cut mapping time by
+~2–3% on Apple M5 and up to ~3% on x86-64, with byte-identical output.
+
 ## [0.8.0] - 2026-10-19
 
 ### Breaking Changes
