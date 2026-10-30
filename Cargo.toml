@@ -21,7 +21,7 @@ tiny-dict = { version = "0.8.1", path = "crates/tiny-dict" }
 # Succinct data structures
 # Succinct data structures and the minimizer/k-mer MPHF (PHastR). 0.15.2 adds
 # PHastRBuilder::sweep_chunks and ::temp_dir, used by the streaming MPHF build.
-sux = { version = "0.15.2", features = ["epserde"] }
+sux = { version = "0.15.2", default-features = false, features = ["epserde", "rayon"] }
 
 # FASTA/FASTQ parsing
 needletail = "0.7"

@@ -1521,7 +1521,6 @@ dependencies = [
  "dsi-progress-logger",
  "epserde",
  "fallible-iterator",
- "flate2",
  "impl-tools",
  "lender",
  "log",
@@ -1537,7 +1536,6 @@ dependencies = [
  "value-traits",
  "xxhash-rust",
  "zerocopy",
- "zstd",
 ]
 
 [[package]]
