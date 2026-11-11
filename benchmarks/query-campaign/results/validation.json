@@ -1,0 +1,38 @@
+{
+  "gencode": {
+    "bytes": 372101968,
+    "byte_identical": true,
+    "sha256": [
+      "c7d0d08d36e2391bd6f527fc075bd91998bf3f5940e4b78828b3f33ea7bad2b7",
+      "c7d0d08d36e2391bd6f527fc075bd91998bf3f5940e4b78828b3f33ea7bad2b7"
+    ]
+  },
+  "human": {
+    "bytes": 1708114192,
+    "byte_identical": true,
+    "sha256": [
+      "1593c4a19a3eb60a6c429574cf100cea308d46543c45d8f93d3a9efdfe061563",
+      "1593c4a19a3eb60a6c429574cf100cea308d46543c45d8f93d3a9efdfe061563"
+    ]
+  },
+  "gencode_current": {
+    "bytes": 1092589648,
+    "byte_identical": true,
+    "variants": [
+      "original",
+      "default",
+      "experimental"
+    ],
+    "sha256": "ea4b7aec03228680bbf392f3ba016e92aa9e98a29aa71ceeebebaa3a033d8364"
+  },
+  "human_reverse_confirmation": {
+    "bytes": 1708114192,
+    "byte_identical": true,
+    "sha256": "1593c4a19a3eb60a6c429574cf100cea308d46543c45d8f93d3a9efdfe061563"
+  },
+  "mapping": {
+    "runs": 54,
+    "all_rad_files_byte_identical_within_workload": true,
+    "details": "mapping-reviewed.json"
+  }
+}

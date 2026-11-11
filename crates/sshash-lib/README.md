@@ -24,6 +24,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Experimental queries
+
+Enable the Cargo feature `experimental-query` to use
+`Dictionary::query_batch::<K, B, PREFETCH>()` and
+`Dictionary::enable_bucket_fingerprints()` / `disable_bucket_fingerprints()`.
+The filter starts disabled and must be rebuilt after loading an index. It costs
+one byte per minimizer bucket and preserves exact lookup results. Batches are
+intended for independent seeds; streaming queries still benefit from their
+existing rolling and extension state. The public methods document examples,
+preconditions, prefetch coverage, and allocation costs.
+
+See the repository's
+[experiment notes](https://github.com/COMBINE-lab/sshash-rs/blob/main/docs/experimental-query.md)
+for performance tradeoffs and reproducible benchmark harnesses. Neither API
+changes construction, k-mer IDs, or the serialized index format.
+
 ## Modules
 
 | Module | Purpose |

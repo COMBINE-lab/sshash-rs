@@ -39,6 +39,11 @@ cargo build --release
 
 The binary is `target/release/sshash`.
 
+The library also has an opt-in `experimental-query` feature for independent
+seed batching and a derived minimizer fingerprint filter. See the
+[design, exactness contracts, and measurements](docs/experimental-query.md)
+before enabling it. These experiments do not change the saved index format.
+
 ## Usage
 
 ### Build an index
