@@ -29,8 +29,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Enable the Cargo feature `experimental-query` to use
 `Dictionary::query_batch::<K, B, PREFETCH>()` and
 `Dictionary::enable_bucket_fingerprints()` / `disable_bucket_fingerprints()`.
-The filter starts disabled and must be rebuilt after loading an index. It costs
-one byte per minimizer bucket and preserves exact lookup results. Batches are
+The filter starts disabled and must be rebuilt after loading an index. It defaults
+to one byte per minimizer bucket and preserves exact lookup results. Use
+`enable_bucket_fingerprints_with_layout(BucketFingerprintLayout::Packed4)` (or
+`Bits7`, `Byte255`, `Wide16`) to choose another footprint/collision tradeoff.
+Batches are
 intended for independent seeds; streaming queries still benefit from their
 existing rolling and extension state. The public methods document examples,
 preconditions, prefetch coverage, and allocation costs.
