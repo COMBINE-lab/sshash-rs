@@ -1,0 +1,12 @@
+{
+  "source_sha256": {
+    "campaign/negative-query/filter_compare-v4": "4e871ae62a3fe8dfcc1d22c8f53e9e1351418ddae0c173a2c6d202897ad9c0b5",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/bin/filter_compare.rs": "5422d81dae706463ae973d37c4f298d31cd465d8bb3fbef5ee55d1ef93e6c7fb",
+    "sshash-negative-campaign/crates/sshash-lib/src/streaming_query/deferred.rs": "f6e8f55ccc4941127c6c0ffaf0d2a192a6b43c0765f487247b75fc45a8b084ac",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/Cargo.lock": "a39923bbe458452249370114c85afe77f3327951b47fbe804c7ae0658cdedd03",
+    "campaign/negative-query/run_stage6.py": "13cc5e69edbf89a70561e04492ed3134e0137bf1418f6b8afcb64ceae2a955f9"
+  },
+  "flags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "note": "Adds direct outlined-seed filtering and an always-pass control; default streaming remains unchanged. Exact positive fields/membership validated, with full-field checks for always-pass controls."
+}

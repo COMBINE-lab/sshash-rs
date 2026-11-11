@@ -1,0 +1,16 @@
+{
+  "flags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "source_sha256": {
+    "campaign/negative-query/qmer_opportunity": "405c52f85f2ee0dbb9ad145c45b7941625290d7ae32f316dbeb0da6b14f9b82a",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/bin/qmer_opportunity.rs": "5226707a7b4f031615ee26aa93c77b584ce3669b104e240ca0ee40ef8306437f",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/common/qmer.rs": "3d189569cad8f3eed9f8ccc3d981946ab4be07ed3524548b951175f133f8aaf5",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/Cargo.lock": "187edaec36e556891255e7f583f6dc3aab6e33166c4977c3b719724d225b773b",
+    "campaign/negative-query/run_stage2.py": "10b12e892a8d3016d775e9ba86274b44d4fac4ecadcc821712a00780807f5995"
+  },
+  "note": "Stage2 binary predates stage3 external filter dependency additions to shared harness Cargo.lock; source and binary hashes are authoritative.",
+  "upstream": {
+    "audit/ZOR": "2967cc4907de2af753a7208ef2c566fe045c8d41",
+    "audit/xorf": "60106e9fe010505564468eb159bd4e0ed8af89a6"
+  }
+}

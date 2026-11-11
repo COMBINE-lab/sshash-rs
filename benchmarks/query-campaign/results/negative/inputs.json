@@ -1,0 +1,122 @@
+[
+  {
+    "path": "campaign/index/gencode.ssi",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/index/gencode.ssi",
+    "bytes": 86774763,
+    "sha256": "fa424da0cf795171fef13bbce9cd8f4de3f4e0cba4c0ac4e071e80e65ee064d7"
+  },
+  {
+    "path": "campaign/index/gencode.ssi.mphf",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/index/gencode.ssi.mphf",
+    "bytes": 3373636,
+    "sha256": "c65a963bc336ae50fd21187bc6fcc8ae1dd4059fd830c37583bb226634f4d8b0"
+  },
+  {
+    "path": "/scratch1/alevin-fry-ecosystem/tmp/sux-phastr/idx/human_r0152_t32.ssi",
+    "resolved_path": "/scratch1/alevin-fry-ecosystem/tmp/sux-phastr/idx/human_r0152_t32.ssi",
+    "bytes": 1437176162,
+    "sha256": "a4d965f74d773c47f783448d48abe03c1023c4dde3e9e766f4c763700d4a7283"
+  },
+  {
+    "path": "/scratch1/alevin-fry-ecosystem/tmp/sux-phastr/idx/human_r0152_t32.ssi.mphf",
+    "resolved_path": "/scratch1/alevin-fry-ecosystem/tmp/sux-phastr/idx/human_r0152_t32.ssi.mphf",
+    "bytes": 54357380,
+    "sha256": "1c2525d5b049c3159982856f7bd6fdb8ccf04cc139898caa272caeb44056ef83"
+  },
+  {
+    "path": "campaign/reads/rna100k_1.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/reads/rna100k_1.fq",
+    "bytes": 33077790,
+    "sha256": "e614123b58dbc961b6f578ab0878e1b26d3a19af1c55350de25237c882872ead"
+  },
+  {
+    "path": "campaign/negative-query/gencode-q0.keys",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/gencode-q0.keys",
+    "bytes": 105825024,
+    "sha256": "339b28e2b39be294c8005dba0c3556848acf6f7f3458eede74f8e580f8f50850"
+  },
+  {
+    "path": "campaign/negative-query/gencode-q16.keys",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/gencode-q16.keys",
+    "bytes": 669072664,
+    "sha256": "996d4e4144a293ea18a316c238555b28c07185b5591fa69586d9018577845063"
+  },
+  {
+    "path": "campaign/negative-query/gencode-q18.keys",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/gencode-q18.keys",
+    "bytes": 727054968,
+    "sha256": "537991e7a745ee05aa92e264b85db52301396bf494ea207878c94dcbc260a627"
+  },
+  {
+    "path": "campaign/negative-query/human-q0.keys",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/human-q0.keys",
+    "bytes": 1423918696,
+    "sha256": "2f1ffa485d664caae3caf3f816c17e9af98f3fd39dc5f5416831c2a75d1a99ae"
+  },
+  {
+    "path": "campaign/negative-query/human-q16.keys",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/human-q16.keys",
+    "bytes": 4880989192,
+    "sha256": "3514d18189711aead629847ef127d5aa4eb212a5a659a0b904ce0729b9bd8917"
+  },
+  {
+    "path": "campaign/negative-query/human-q18.keys",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/human-q18.keys",
+    "bytes": 8947738496,
+    "sha256": "5e7e60105b46bcea0566a83e043edca367d248f0664bde4397daa6d7dce122e8"
+  },
+  {
+    "path": "campaign/negative-query/random100k.0.trace",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/random100k.0.trace",
+    "bytes": 401040000,
+    "sha256": "9d515e008ae11793482c7152064db75564f280c8fde5f3ad17aaebad8d5b4288"
+  },
+  {
+    "path": "campaign/negative-query/rna100k.0.trace",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/rna100k.0.trace",
+    "bytes": 174409922,
+    "sha256": "be7b9f705eb920d1bb34fe955d3f03e9ce500b4d7d06af0cb0732054aebac9e3"
+  },
+  {
+    "path": "campaign/negative-query/sim100k.0.trace",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/sim100k.0.trace",
+    "bytes": 16811389,
+    "sha256": "3373ea9a2c16dddda5ff7859f5a0a3750d61536db1bccc3186764dd3af230989"
+  },
+  {
+    "path": "campaign/negative-query/random100k_1.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/random100k_1.fq",
+    "bytes": 3178890,
+    "sha256": "f22e07fc7fd47453e064940304f4647cb25639162e89d2fdcb9f7bdc39ee0864"
+  },
+  {
+    "path": "campaign/negative-query/random100k_2.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/random100k_2.fq",
+    "bytes": 3178890,
+    "sha256": "f7f606ec86e6c3c2a691ef5b69ed369da1fbdb60ee828a13c80c30fba69039c8"
+  },
+  {
+    "path": "campaign/negative-query/rna100k_1.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/rna100k_1.fq",
+    "bytes": 3287788,
+    "sha256": "c29eab99bbcaa680c98bb80631c01620ea5c2bdd4b2b76ff3c09635305ebbc1e"
+  },
+  {
+    "path": "campaign/negative-query/rna100k_2.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/rna100k_2.fq",
+    "bytes": 3287788,
+    "sha256": "397a7b71490c6b0efbd4b4e9c092b5d2eace6aa458a60875a1f5aeca69c74a1b"
+  },
+  {
+    "path": "campaign/negative-query/sim100k_1.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/sim100k_1.fq",
+    "bytes": 5319377,
+    "sha256": "048a42915151673672644acd1c3aeb6b88c4cfa615020f45d1fa73b819fd3e75"
+  },
+  {
+    "path": "campaign/negative-query/sim100k_2.fq",
+    "resolved_path": "/scratch1/rob/alevin-fry-ecosystem/campaign/negative-query/sim100k_2.fq",
+    "bytes": 5319377,
+    "sha256": "8aff7ebbd2e70647fe78bb810cda311fc76b9416284cf9259a38a840edce9ddb"
+  }
+]

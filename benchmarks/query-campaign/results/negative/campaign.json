@@ -1,0 +1,23 @@
+{
+  "status": "complete",
+  "order": [
+    "cross-read deferred seeds",
+    "q-mer absence opportunity after existing reuse",
+    "ZOR / binary fuse / blocked Bloom comparison"
+  ],
+  "base_sshash": "644fbdb (main, offset fix merged) + b126c74 (PR10 feature changes)",
+  "base_piscem": "9d3bd92",
+  "correctness": "Full fields against corrected scalar stream; actual single-worker Piscem request traces; ordered mapping outputs if a candidate proceeds to mapper integration. No change to legacy contracts.",
+  "measurement": "Same query consumer, explicit scalar-scheduler and prefetch ablations, lanes 8/16/32/64, rotating trials, quiet gate and per-trial telemetry. Trace capture is untimed.",
+  "production_gate": "Require end-to-end benefit, exact outputs and bounded memory/startup; reject research prototypes that lose to baseline.",
+  "stage1": "complete: 3731/3744 accepted; exact full fields pass; reject unconditional production scheduler because filtered real traces/streams regress. No batched mapper throughput claim.",
+  "stage2": "complete: exact q-mer oracle; workload-dependent opportunity",
+  "stage3": "complete: complete ZOR, binary fuse, register-blocked Bloom and exact bitmap on full reference sets",
+  "followups": "complete: scale/replication, net minimizer filtering, outlined-path/always-pass controls",
+  "trials": {
+    "total": 14265,
+    "quiet": 14220,
+    "insufficient_summary_cells": 7
+  },
+  "production": "No default promotion; targeted q18 binary-fuse mapper path and lower-memory selected-minimizer Bloom are leads, with documented regressions and end-to-end gates."
+}

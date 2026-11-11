@@ -1,0 +1,11 @@
+{
+  "source_sha256": {
+    "campaign/negative-query/filter_compare-v2": "626f08d2bbffe529c8ca3c9f026298ab59dd787f5066ac11d2f05941ab211d02",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/bin/filter_compare.rs": "b518f5debb116acb2f724ae075b581312009428f65ffcd5cb445801da5e969b7",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/Cargo.lock": "a39923bbe458452249370114c85afe77f3327951b47fbe804c7ae0658cdedd03",
+    "campaign/negative-query/run_stage4.py": "a3c83b17712f63c0f74ee56120a40f981c62ffa2117a7549ab303fd645a6c8fe"
+  },
+  "flags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "note": "Initial Gencode q16/q18 measurements use the archived v1 binary/source; this run adds minimizer probes and confirms selected q-mer backends with the v2 binary."
+}

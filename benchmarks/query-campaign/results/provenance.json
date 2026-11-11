@@ -1,0 +1,66 @@
+{
+  "date": "2026-11-11",
+  "repos": {
+    "sshash-rs": {
+      "url": "https://github.com/COMBINE-lab/sshash-rs.git",
+      "head": "80131cd3806e79d4d74fa7cbceff9e5b8da16a8d",
+      "remote_main": "80131cd3806e79d4d74fa7cbceff9e5b8da16a8d",
+      "version": "v0.8.1",
+      "status": ""
+    },
+    "piscem-rs": {
+      "url": "https://github.com/COMBINE-lab/piscem-rs.git",
+      "head": "9d3bd92b3611590cf3c6514a604e290008881812",
+      "remote_main": "9d3bd92b3611590cf3c6514a604e290008881812",
+      "version": "piscem-rs-v0.12.3",
+      "status": ""
+    },
+    "sbwt-squeeze-rs": {
+      "url": "https://github.com/anadis504/sbwt-squeeze-rs.git",
+      "head": "ae4500895a5ddc3e70281632332738190aeb174c",
+      "remote_main": "ae4500895a5ddc3e70281632332738190aeb174c",
+      "version": "ae45008",
+      "status": ""
+    }
+  },
+  "paper_sha256": "388989c07ffdef8ea70ce2f4ab1b3b084aceb6c5ffa93304ce7fffb7e8b68726",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "benchmark_cpu": "AMD EPYC 9555",
+  "benchmark_cpu_affinity": 24,
+  "benchmark_rustflags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "binaries": {
+    "original-query-v2": {
+      "bytes": 1458120,
+      "sha256": "a6cdb911bed32bd68990351cdc7b3b85d8ccce18ad23617afa29e2db99aaf3c3"
+    },
+    "experimental-query-final": {
+      "bytes": 1547456,
+      "sha256": "2a61a0f185554656d53f26235634dab021cec0d01283d44b9ad92f0a57ebf186"
+    },
+    "default-query-final": {
+      "bytes": 1458752,
+      "sha256": "5e585e8d94a552aff3d7f9c8dd92ba250abe4828037be28a6a50458ee66fa646"
+    },
+    "matched-original": {
+      "bytes": 1460920,
+      "sha256": "2557d55879540f8a127e00e59d81bd0c77b100488e4cecb46101a5931576596f"
+    },
+    "matched-candidate": {
+      "bytes": 1458888,
+      "sha256": "61387bc8e4b39178da11cc744c4c15a1a6e1b2f3e66605d6da7ea712d3f382a2"
+    },
+    "piscem-original": {
+      "bytes": 292970960,
+      "sha256": "43b2a5246920cbdbcf2e0b38efb59da98debd88fe067392b2dec951b8782d629"
+    },
+    "piscem-filter": {
+      "bytes": 292966840,
+      "sha256": "cf3fc78fadbd35df06e4f8e28d1aeb5ccdd2f7dd8d06358e763db9972cda18d8"
+    },
+    "sbwt-query-final": {
+      "bytes": 13953480,
+      "sha256": "a5f60abb09bddad4e4fd9b7bcceed40994d8676554cc661dd05b4cf67fac1ed7"
+    }
+  },
+  "note": "Binary hashes identify the measured campaign, before documentation and formatting. See README for acceptance criteria and limits."
+}

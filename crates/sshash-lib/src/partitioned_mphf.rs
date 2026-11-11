@@ -158,6 +158,23 @@ impl PartitionedMphf {
         self.offsets[p] + self.inners[p].get(bytes.borrow())
     }
 
+    /// Evaluate independent keys together, prefetching PHastR's first-level seeds.
+    /// Partitioned and empty functions retain the scalar routing semantics.
+    /// Results preserve input order, including duplicate and absent keys; as for
+    /// `get`, an MPHF result alone does not establish membership. Only the single
+    /// partition case uses sux 0.15.2's experimental, doc-hidden `get_batch` API.
+    /// No batching across partitions or new allocation is introduced here.
+    #[cfg(feature = "experimental-query")]
+    #[inline]
+    pub(crate) fn get_batch<K: MphfKey, const B: usize>(&self, keys: &[K; B]) -> [usize; B] {
+        if self.num_partitions == 1 {
+            let bytes = keys.map(|key| key.key_bytes());
+            self.inners[0].get_batch(std::array::from_fn(|i| bytes[i].borrow()))
+        } else {
+            std::array::from_fn(|i| self.get(&keys[i]))
+        }
+    }
+
     /// Total number of keys.
     pub fn num_keys(&self) -> usize {
         self.num_keys
@@ -330,6 +347,31 @@ mod tests {
         let pmphf = build_with(&keys, PARTITIONED);
         assert_eq!(pmphf.num_partitions(), 0);
         assert_eq!(pmphf.num_keys(), 0);
+    }
+
+    #[cfg(feature = "experimental-query")]
+    #[test]
+    fn batch_matches_scalar_including_partitioned_and_absent_keys() {
+        let mut parts = [Vec::new(), Vec::new()];
+        for k in 0..1000u64 {
+            parts[partition_of(k.key_bytes().borrow(), 2)].push(k);
+        }
+        let a = PartitionedMphf::build_single(&parts[0]);
+        let b = PartitionedMphf::build_single(&parts[1]);
+        let multi = PartitionedMphf {
+            inners: a.inners.into_iter().chain(b.inners).collect(),
+            offsets: vec![0, parts[0].len(), 1000],
+            num_partitions: 2,
+            num_keys: 1000,
+        };
+        let single = PartitionedMphf::build_single(&(0..1000u64).collect::<Vec<_>>());
+        for mphf in [&single, &multi, &PartitionedMphf::empty()] {
+            for start in (0..2000).step_by(16) {
+                let keys = std::array::from_fn::<_, 16, _>(|i| start + i as u64);
+                assert_eq!(mphf.get_batch(&keys), keys.map(|k| mphf.get(&k)));
+            }
+            assert!(mphf.get_batch::<u64, 0>(&[]).is_empty());
+        }
     }
 
     #[test]

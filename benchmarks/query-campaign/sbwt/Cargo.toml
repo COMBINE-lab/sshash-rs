@@ -1,0 +1,21 @@
+[package]
+name = "sshash-sbwt-campaign"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sshash-lib = { path = "../../../crates/sshash-lib", features = ["experimental-query"] }
+sbwt = { path = "../../../../sbwt-squeeze-rs/api" }
+bitvec = "=1.0.1"
+# Match the performance-critical versions in the audited repositories' locks.
+sux = { version = "=0.15.2", default-features = false }
+wide = "=1.5.0"
+
+[patch.crates-io]
+simple-sds-sbwt = { path = "../../../../sbwt-squeeze-rs/patches/simple-sds-sbwt" }
+
+[profile.release]
+lto = "thin"
+
+# Keep benchmark dependencies separate from the library workspace.
+[workspace]

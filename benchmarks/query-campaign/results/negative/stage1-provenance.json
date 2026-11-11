@@ -1,0 +1,17 @@
+{
+  "source_sha256": {
+    "crates/sshash-lib/src/streaming_query.rs": "3125d2c98173109940aad8f14c6cac9a7dda5ed5794cc3b38567e653c7bad996",
+    "crates/sshash-lib/src/streaming_query/deferred.rs": "82493c286b79d50a0fceb9389d05821483542258700c4abbefce5a09c52dc88b",
+    "crates/sshash-lib/src/dictionary/experimental.rs": "c55f8e6690308c09f747eba47f5389e9a884d974b933605fbaba45fda33a642e",
+    "benchmarks/query-campaign/sshash/src/bin/negative_pipeline.rs": "4e0d6050595b455b4f74035cab3451de7bc24d6efafdeb9681cb7c9ca2498313"
+  },
+  "binary_sha256": {
+    "negative_pipeline": "170ea6db4526ba524630eaa21158942374f731309d4aed6fa98c990a3a140e7e",
+    "piscem-trace": "c236240de813bf7bdd6a85ea46d010e99ae81f351230b8be2bed37783fea03a4"
+  },
+  "rustflags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "cpu": 24,
+  "sibling": 88,
+  "reps": 9,
+  "min_queries_per_trial": 5000000
+}

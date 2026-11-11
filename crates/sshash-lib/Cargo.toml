@@ -76,3 +76,7 @@ memmap2 = { workspace = true }
 # Testing utilities
 rand = "0.10"
 tempfile = "3.27"
+
+[features]
+# Opt-in query experiments; does not alter the serialized index.
+experimental-query = []
