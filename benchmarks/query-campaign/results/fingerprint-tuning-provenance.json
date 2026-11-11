@@ -1,0 +1,54 @@
+{
+  "base_sshash": "231cfff86023c43f1e2c736d9ffcde25c545f21a",
+  "sbwt": "ae4500895a5ddc3e70281632332738190aeb174c",
+  "date": "2026-11-11",
+  "cpu": "AMD EPYC 9555",
+  "core": 24,
+  "sibling": 88,
+  "rustflags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "reps": 9,
+  "quiet_policy": "3x10s host<4%, core/sibling<5%; timed acceptance outside busy CPUs<2 and sibling<=1%",
+  "source_sha256": {
+    "sshash-filter-tuning/crates/sshash-lib/src/dictionary.rs": "2a1b69abc2659c9accde496e75203e8a3b9c21663d9a744056c17c973e865987",
+    "sshash-filter-tuning/crates/sshash-lib/src/dictionary/experimental.rs": "882f69e3f01a444bdab5626fe24bc7bb09fd5708ae2c0c41a17f126eb22f8d8c",
+    "sshash-filter-tuning/benchmarks/query-campaign/sshash/src/bin/filter_layouts.rs": "0328af405b48610542f3f7c4d0960020d34de59cf274d800f96b8e5437b27409",
+    "sshash-filter-tuning/benchmarks/query-campaign/sbwt/src/bin/ablation.rs": "0b0c6e0d31a5cd51804f35055d46f1faff48bd5338aa15014122ac8546554acb"
+  },
+  "binary_sha256": {
+    "layouts": "7ec70bf324a3ccaee2e078a9cef92774291626297a1bfc6d3bb02ca3de81a08b",
+    "candidate-control": "c05d87ca52d16d34696503141565d8b343763784bacb6ab8bc09947a82bf7dc8",
+    "sbwt-ablation": "3077922a2f936a6fa56d392c1cc92716810a133500b2531a0d1cdc29e30a2d65",
+    "original-control": "ddedaeeb9f824e058f3c30cdbd2b6e56758a8de8fb25b2d3a9c235bbd35b6398",
+    "layouts-v2": "af70fd6216dc33447ff9076e5e550ead72cd6c878c692a8326284c44c47577fc",
+    "candidate-control-v2": "36cb4f7f955938e7da11897a4f36948bcb2e0bc1fb42042368d4c007d92e71da",
+    "original-control-v2": "af0892d6c1244fe574dd160c71fee9783c7c91ef3f050f6e78caffc4d942caee",
+    "layouts-v3": "5f5c904b359dc8a78488f1e16af6d4d30821d3041e01520d102527c9378f9f18",
+    "candidate-control-v3": "fb86fa25bf52a57093c2693783c3309317aa9f415859fe743ffd90ca12bd5c9c"
+  },
+  "v3_source_sha256": {
+    "sshash-filter-tuning/crates/sshash-lib/src/dictionary.rs": "861b79280ba4185a1cf5a98e0047cfc7dc314b01bc472139eb7ac1e4b7bd7c10",
+    "sshash-filter-tuning/crates/sshash-lib/src/dictionary/experimental.rs": "d6daaacfe6578b8a57a3282dd88c4343a8e3da679e8f15c0db77ce839b5a5f46",
+    "sshash-filter-tuning/benchmarks/query-campaign/sshash/src/bin/filter_layouts.rs": "3fbb3ef3641d0c9c7ae0d31302f5db55b70f7f4b7ea99ed42e9e5504a3333fc2"
+  },
+  "version_notes": {
+    "v1": "enum-backed layout prototype, no cooperative pause; first SBWT and layout sweeps",
+    "v2": "same library as v1; identical query kernels with cooperative pause added to harness",
+    "v3": "boxed bytes plus separate layout field; inline seven-bit path and outlined alternatives; same v2 harness"
+  },
+  "candidate_commit": "8adec6971fbb0f6e4d46f4d7e3c15e6da3cd842f",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14), LLVM 22.1.6",
+  "status": "SBWT ablation and deterministic attribution complete; final-layout timing controls pending quiet host",
+  "published_runs": [
+    "filter-sbwt-ablation",
+    "filter-gencode-layouts (diagnostics only)",
+    "filter-human-layouts (diagnostics only)"
+  ],
+  "notes": [
+    "SBWT timing uses the enum prototype for its SSHash comparator; the four SBWT APIs and their synthetic index are unchanged.",
+    "Prototype SSHash timings do not establish final candidate performance.",
+    "Final controls use the same harness built against PR #10 and the candidate, with experiments enabled and layouts disabled.",
+    "Final sweeps enable layouts. All builds use release thin LTO and the recorded RUSTFLAGS.",
+    "No new downstream mapping timings are claimed.",
+    "Telemetry acceptance requires complete coverage by recorded sample intervals; outside CPU busy <2 and sibling <=1%."
+  ]
+}

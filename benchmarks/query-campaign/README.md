@@ -237,3 +237,10 @@ Use labels beginning `filter-` so the summarizer discovers the logs. A controlle
 launching several binaries under one runner must associate its common telemetry
 with every child log (the recorded controller uses hard links). Build all binaries
 before starting the runner; do not compile or test alongside accepted timings.
+
+The follow-up's `results/fingerprint-tuning.json` contains per-trial acceptance,
+summary cells, exactness markers, scalar work counters, and filter attribution.
+`fingerprint-tuning-provenance.json` distinguishes prototype and final binaries
+and records the source revision, hashes, and any measurements still pending.
+See [the interpretation](../../docs/fingerprint-tuning.md) before comparing
+rows from different harness versions.

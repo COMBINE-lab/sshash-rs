@@ -208,3 +208,21 @@ The existing rolling stream cannot simply be replaced with independent batches:
 retain successful extension and same-minimizer reuse, then batch the independent
 reads that need new seeds. This is a separate scheduler experiment from changing
 the fingerprint layout.
+
+## Evidence and remaining controls
+
+[Trial records and attribution](../benchmarks/query-campaign/results/fingerprint-tuning.json)
+and [source/binary provenance](../benchmarks/query-campaign/results/fingerprint-tuning-provenance.json)
+retain the completed SBWT experiment and both indices' deterministic diagnostics.
+The SBWT harness's SSHash comparator was the first configurable prototype; its
+SSHash timing rows are historical and do not establish the final candidate's
+performance. The four SBWT APIs are unchanged by that library revision.
+
+The final layout sweeps and matched original/prototype/final controls are pending
+a quiet host. Consequently this draft does not claim a speedup from configurable
+layouts or establish their overhead relative to PR #10. The seven-bit default is
+retained. All feature-enabled library tests (152 passed, 3 ignored) and Clippy
+with warnings denied pass; the default workspace suite passed (154, 3 ignored)
+before the feature-only storage revision. New Rust files pass formatting checks;
+the workspace-wide formatting check reports existing differences outside this
+change. No new Piscem mapping measurements are included.
