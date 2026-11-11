@@ -12,6 +12,12 @@
 use crate::kmer::{Kmer, KmerBits};
 use crate::minimizer::{MinimizerInfo, MinimizerIterator};
 
+
+#[cfg(feature = "experimental-query")]
+mod deferred;
+#[cfg(feature = "experimental-query")]
+pub use deferred::DeferredQuery;
+
 /// Result of a k-mer lookup
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LookupResult {

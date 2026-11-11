@@ -1,0 +1,12 @@
+{
+  "source_sha256": {
+    "campaign/negative-query/filter_compare-v3": "dc394cb5341a6c81fb5b52e76ac46be7a6c1b8a75d95ac683a3977b891e2fe2e",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/bin/filter_compare.rs": "64a1de3e763a0c00253907228325bc870c851e4883a2bec72fa48905b4d7a89c",
+    "sshash-negative-campaign/crates/sshash-lib/src/streaming_query/deferred.rs": "45a9b356246e5cebbb7af030c365ca95c4e7a8bc6e56b6a7a15ff8a357dba37f",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/Cargo.lock": "a39923bbe458452249370114c85afe77f3327951b47fbe804c7ae0658cdedd03",
+    "campaign/negative-query/run_stage5.py": "896c282e8824f594b3dfceaabe692c012a75b72467ccdc14ba958626e24bc5bb"
+  },
+  "flags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "note": "Adds integrated selected-minimizer rejection with semantically valid negative memo; membership/full positive fields retained, legacy negative hints may strengthen. Includes N=100000 cache-sensitivity workloads."
+}

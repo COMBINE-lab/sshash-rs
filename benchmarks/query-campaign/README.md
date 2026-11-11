@@ -9,7 +9,8 @@ The harnesses are outside the production
 workspace and each has its own lockfile. Do not time debug builds.
 
 Read the [design and interpretation notes](../../docs/experimental-query.md)
-before comparing results. Input datasets and large binary result vectors are not
+before comparing results. The follow-up filter harness also requires the pinned
+external clones documented under Stateful negative-query campaign below. Input datasets and large binary result vectors are not
 committed. The SBWT harness generates its own deterministic data and can reproduce
 the direct comparison without downloading a biological reference.
 
@@ -152,3 +153,143 @@ The original raw logs, telemetry, datasets, and result vectors are retained in
 the local campaign archive, not distributed in this repository. Published records
 allow inspection of the reported samples but do not independently reconstruct
 the original host's activity. New runs must collect their own telemetry.
+
+## Stateful negative-query campaign (follow-up)
+
+The [negative-query report](../../docs/negative-query-campaign.md) uses corrected
+main `644fbdb` plus PR #10, independently of the historical campaign above. In
+particular, successful streaming extensions now have corrected absolute offsets.
+The legacy full-result contract remains the baseline for deferred batching.
+
+External filter sources are benchmark-only dependencies. Before building this
+harness, put these exact revisions under `../audit/` relative to the repo root:
+
+```bash
+git clone https://github.com/Malfoy/ZOR ../audit/ZOR
+git -C ../audit/ZOR checkout 2967cc4907de2af753a7208ef2c566fe045c8d41
+git clone https://github.com/ayazhafiz/xorf ../audit/xorf
+git -C ../audit/xorf checkout 60106e9fe010505564468eb159bd4e0ed8af89a6
+cargo build --manifest-path benchmarks/query-campaign/sshash/Cargo.toml \
+  --release --locked --features experiments
+```
+
+The binaries accept the following arguments (k=31, nonempty workloads):
+
+```text
+negative_pipeline INDEX READ_COUNT REAL_FASTX [PISCEM_TRACE...]
+qmer_opportunity INDEX READ_COUNT REAL_FASTX [PISCEM_TRACE...]
+filter_compare INDEX READ_COUNT REAL_FASTX Q KEY_FILE KIND [PISCEM_TRACE...]
+```
+
+`REPS` defaults to 9 for the scheduler and 7 for the q-mer/filter studies. Each
+trial aggregates at least 5M requests/probes. `QS=12,14,16,18,20` controls oracle
+q values. For real filters, first run `KIND=extract` to write all sorted unique
+reference keys, then use `fuse8`, `zor4`, `zor5`, `bloom8`, `bloom16`, or `bitmap`.
+Q=0 means selected minimizers; the final harness measures both standalone
+pending-seed probes and streaming completion through an independent filter;
+`mphf7` reproduces the existing MPHF-plus-tag decision for that comparison.
+A minimizer filter cannot safely certify absent overlapping substrings. Bitmap
+is only for q>0. Q16/Q18 direct-address allocations are 512 MiB/8 GiB; Q20 would
+allocate 128 GiB. Extraction also writes 8 bytes per distinct key to disk. Key
+files have magic `QKEYS001`, little-endian u64 q/count, then sorted u64 keys.
+They do not embed index identity: supplying the matching key file is a harness
+precondition. A production sidecar would need index/encoding identity checks.
+
+The existing seven-bit bucket filter stays enabled for scalar/fallback seeds.
+`always` tests a suffix only after local streaming work fails; `after-miss` also
+requires the previous request to miss. A certificate covers [position,position+
+K-q]. Both discard streaming state across skips. Their positive-only callbacks
+are an experimental contract, not a replacement for legacy negative hints.
+
+`negative/` contains the actual campaign controllers and untimed capture driver.
+They assume the archived workspace layout (`campaign/`, sibling checkouts and
+index paths); adapt these paths on another host. Keep the binary per stage: the
+initial Gencode full-filter run used the exact source snapshot
+`sshash/snapshots/filter_compare-qmer-v1.rs` (copy it to `src/bin/filter_compare.rs`
+to rebuild); the subsequent standalone minimizer/human/finalist comparisons use
+`sshash/snapshots/filter_compare-v2.rs`. The initial net-minimizer and larger-query workload campaign uses
+`sshash/snapshots/filter_compare-v3.rs` and `deferred-v2.rs`. The final outlined
+seed-path control uses the current source. Provenance records distinguish those binaries. `sshash/snapshots/deferred-v1.rs` preserves the original deferred implementation
+for the first four stages (its hash matches stage 1 provenance). The final binary
+adds the documented experimental minimizer-filter completion
+method; it does not change ordinary streaming or scalar completion.
+
+Run each controller through the cooperative quiet gate, from the workspace root:
+
+```bash
+python3 sshash-negative-campaign/benchmarks/query-campaign/run_filter_quiet.py \
+  --logs campaign/logs filter-negative-stage3 \
+  python3 campaign/negative-query/run_stage3.py
+python3 sshash-negative-campaign/benchmarks/query-campaign/summarize_filters.py \
+  campaign/logs campaign/negative-query/all-results.json
+```
+
+Use fresh log directories/run labels; the runner refuses existing labels and
+the archived controllers assume fresh child-log names. Stop builds/tests before
+this command. The runner neither signals nor changes
+other users' processes. It gates startup, pauses between trials, and samples CPU
+activity every second. The summarizer requires complete telemetry coverage and
+rejects any interval overlapping contention. Retain original logs and telemetry
+alongside summaries; do not infer quietness from a completed run alone.
+
+Additional CSV records (all untimed except `LAYOUT`):
+
+- `LAYOUT`: round/q, layout, workload, method, repetition, requests, ns/request,
+  wall start/end. `probe` measures repeated-vector throughput, not dependent
+  latency; its vectors are suffixes/minimizers of baseline pending seeds.
+- `OPPORTUNITY`: q, workload, mode, requests, remaining dictionary seeds, filter
+  probes, absence certificates, covered requests, locally completed requests.
+- `BASELINE_SEEDS`: workload, requests, uncached dictionary seeds.
+- `ORACLE_SET`: q, queried distinct keys, present queried keys, HLL estimated
+  reference distinct keys, construction-accelerator bytes.
+- `ORACLE_BUILD`: scanned SPSS bases, seconds.
+- `FILTER_BUILD`: q, kind, distinct keys, actual retained payload bytes, build
+  seconds, pre-build RSS, post-build RSS, process HWM (last three in KiB).
+  HWM includes dictionary, key vector and workloads; it is not filter-only peak.
+- `FILTER_PROBES`: q, kind, workload, probes, truly absent probes, false passes.
+  Repeated keys count repeatedly: this is workload-weighted false-positive rate.
+- `ZOR_REMAINDER`: q, kind, abandoned main-layer keys, remainder slots. Complete
+  ZOR always includes that remainder. Pure mode is never used.
+- `EXTRACT`: q, exact distinct keys, extraction seconds, deduplication payload.
+- `EXACT`: the passed validation scope. Full-filter runs check every inserted
+  key for false negatives, plus every workload's membership/positive fields/order.
+
+Reported build time excludes reference enumeration, key-file loading, input
+workload creation, seven-bit fallback setup, and exhaustive correctness checks.
+Construction is single-core in these runs. ZOR seed is 69 with default tie/cycle
+policy; binary fuse uses xorf's deterministic non-random-fill configuration.
+Bloom uses four bits in one 64-bit register with SplitMix hashing; powers of two
+round the requested 8/16 bits/key upward, so compare actual bytes, not names.
+
+The follow-up publishes `results/negative/stage*-results.json` with every timing,
+quiet flag, summary spread, exact check and untimed diagnostic. `coverage` lists
+any missing/insufficient summary cells, including cells with zero accepted
+trials. Unlike the historical campaign, `results/negative/raw.json.gz` also
+contains raw logs and original gate/CPU telemetry. Recompute acceptance with:
+
+```bash
+python3 benchmarks/query-campaign/negative/unpack.py \
+  benchmarks/query-campaign/results/negative/raw.json.gz /tmp/negative-raw
+python3 benchmarks/query-campaign/summarize_filters.py \
+  /tmp/negative-raw /tmp/negative-recomputed.json
+```
+
+`stage*-provenance.json` identifies source/binary hashes. Large input files and
+key sets remain in the local archive. Stage 5 includes 100,000-read exhaustive
+workloads to expose query-working-set sensitivity, plus the original 10,000-pair
+mapper traces for net selected-minimizer tests. It compares a pre-MPHF filter
+while retaining the existing seven-bit table on fallback; it does not measure
+removal of that table, combined minimizer+substring filtering, or a dynamic
+workload-selection policy. The default scalar control is paired in every run.
+
+Stage 6 adds `direct` for Q=0 and a `pass` (always-true) ablation. The direct
+variant follows the original full-result streaming loop with an outlined
+filter-aware seed routine, avoiding a prepare/complete Option boundary. The
+pass control compares **all** result fields to the original stream; real filters
+compare membership and every positive field. `OPPORTUNITY` rows still describe
+the deferred always/after-miss variants, not direct-mode instrumentation.
+
+The final control also prints `HITS`: q, kind, workload, requests, positive
+requests, positive-ID digest. This records query mix independently of filtering.
+Increasing the prefix from 10k to 100k real reads changes the mapping fraction
+as well as working-set size; it is not a controlled cache-only perturbation.

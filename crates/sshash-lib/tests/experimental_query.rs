@@ -4,7 +4,8 @@
 //! Small minimizers exercise heavy buckets; even m exercises palindromic minima;
 //! k > 31 exercises the u128 representation. These are correctness tests, not
 //! timing assertions. The scalar/streaming baselines are kept separate because
-//! their pre-existing kmer_offset behavior can differ on successful extensions.
+//! each path must preserve its own full result contract. The streaming offset
+//! correction is included in this branch's main baseline.
 use sshash_lib::builder::{config::BuildConfiguration, dictionary_builder::DictionaryBuilder};
 use sshash_lib::kmer::KmerBits;
 use sshash_lib::{Dictionary, Kmer};

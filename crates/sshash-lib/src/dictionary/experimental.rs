@@ -215,3 +215,91 @@ impl Dictionary {
         })
     }
 }
+
+impl Dictionary {
+    /// Resolve all pending streams in a fixed-width lane array, preserving each
+    /// stream's decoded-bucket cache and every result field. Nonpending lanes
+    /// are ignored; their dummy MPHF keys only pad the underlying fixed batch.
+    /// No query is advanced, and completed results are read through `result()`.
+    ///
+    /// `PREFETCH` controls downstream EF/offset/text hints; PHastR's own batch
+    /// lookup is used in both modes. An empty dictionary uses scalar completion.
+    /// Panics if any lane belongs to a different dictionary. Stack work is O(B).
+    pub fn complete_seed_batch<const K: usize, const B: usize, const PREFETCH: bool>(
+        &self,
+        lanes: &mut [crate::streaming_query::DeferredQuery<'_, K>; B],
+    ) where
+        Kmer<K>: KmerBits,
+    {
+        assert!(
+            lanes.iter().all(|q| std::ptr::eq(q.dict, self)),
+            "mixed dictionaries"
+        );
+        let pending = std::array::from_fn::<_, B, _>(|i| lanes[i].is_pending());
+        if !pending.iter().any(|&x| x) {
+            return;
+        }
+        let keys = std::array::from_fn::<_, B, _>(|i| {
+            if pending[i] {
+                lanes[i].parts().2.value
+            } else {
+                0
+            }
+        });
+        let Some(ids) = self.control_map.mphf_ref().map(|m| m.get_batch(&keys)) else {
+            for q in lanes.iter_mut().filter(|q| q.is_pending()) {
+                q.complete_scalar();
+            }
+            return;
+        };
+        let active = std::array::from_fn::<_, B, _>(|i| {
+            pending[i] && self.bucket_may_contain(ids[i], keys[i])
+        });
+        if PREFETCH {
+            for i in 0..B {
+                if active[i] {
+                    self.index
+                        .num_super_kmers_before_bucket
+                        .prefetch_access(ids[i]);
+                }
+            }
+        }
+        let bounds = std::array::from_fn::<_, B, _>(|i| {
+            if !active[i] {
+                return None;
+            }
+            let (begin, end) = self.index.locate_bucket(ids[i]);
+            if PREFETCH && begin < end {
+                let word = begin * self.index.offsets.bit_width() / 64;
+                prefetch_index(self.index.offsets.as_slice(), word);
+                prefetch_index(self.index.offsets.as_slice(), word + 1);
+            }
+            Some((begin, end))
+        });
+        if PREFETCH {
+            for &(begin, end) in bounds.iter().flatten() {
+                if begin == end || ceil_log2((end - begin) as u64) > MIN_L {
+                    continue;
+                }
+                let pos = self.index.offsets.index_value(begin);
+                let text = self.spss.strings_data();
+                prefetch_index(text, pos / 4);
+                prefetch_index(text, pos.saturating_sub(K) / 4);
+                prefetch_index(text, pos / 4 + 16);
+            }
+        }
+        for i in 0..B {
+            if !pending[i] {
+                continue;
+            }
+            let (key, rc, mini) = lanes[i].parts();
+            let cache = lanes[i].cache_mut();
+            cache.valid = true;
+            cache.mini_value = mini.value;
+            cache.bounds = bounds[i];
+            cache.size = 0;
+            let result = self.lookup_in_bucket(&key, &rc, mini, bounds[i], Some(cache));
+            lanes[i].finish(result);
+        }
+    }
+}

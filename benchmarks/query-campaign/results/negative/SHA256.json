@@ -1,0 +1,19 @@
+{
+  "stage1-results.json": "a3ec53acc138cbcdb084cbe398a9dec5a279c15c9853c9b3704b6fa19a94fe1e",
+  "stage1-provenance.json": "287daf55304f7e1494c4cdada8f7db608b2bba0bcb7618500a20fd3aa3b1747e",
+  "stage2-results.json": "65e338e21878dbe2e624bdff41db2c668d60cfa82aefcf6d8d556bcf96eb0e42",
+  "stage2-provenance.json": "5428f3fc1e5feefc04fc9e216485c07d6480cb82ac0c8194874f658981f6fe19",
+  "stage3-results.json": "e2d1195215599ad146a470ad7786b3a8da5d1c5c81847a2709be5aabd9633848",
+  "stage3-provenance.json": "fad9cd1d0daad9b1b02550f12e119afed15cba3250002d3ecb8fc340c862bee3",
+  "stage4-results.json": "9ba283c94e2fee9968ad3920d010b5bafe800ce4dcfd178bcd1366442daca020",
+  "stage4-provenance.json": "4bd5c7119c32168780cac64f0d767709df521618a1579b4f56207ec1f64cd13e",
+  "stage5-results.json": "b525b213a38d641b9b3f23f18a36085f3638279b67fd3ebbb04583c03ccef7c9",
+  "raw.json.gz": "86bec6f25525778ec6da6b736c04cd19a25f30a1e421c73375bba7c7d298ceae",
+  "trace-validation.json": "7fd7889361d703306c8e470ca5dad7744b16d9e440425954fccaed332d8e7ed0",
+  "stage5-provenance.json": "7ce58807f22e15b2e53bae2d24dfab8214d37917255163ed733950121d10e478",
+  "stage6-results.json": "6d10d203914f5860ae14aca76fffb4fd1f88accc9c16d1a223f6ee597b21f291",
+  "validation.json": "7670d61dd95c6183d9801d6e47dfe7e4da7f912458a7b59ca9a07450a32a0a0d",
+  "stage6-provenance.json": "68dc09296871a7a40bba71c1771d40c232da75089c56fdc217fcb455acf8c10f",
+  "inputs.json": "727785670c7b1297dc957d4185f6d95e91774c78ba44e47237535260ab15af17",
+  "campaign.json": "ef6683e0da478072337f4fe06db067f1d2dc8b614b738134b3a3d0d3c9bf31ab"
+}

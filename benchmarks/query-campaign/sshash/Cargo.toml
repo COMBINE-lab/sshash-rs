@@ -7,9 +7,27 @@ experiments = ["sshash-lib/experimental-query"]
 [dependencies]
 sshash-lib = { path = "../../../crates/sshash-lib" }
 needletail = "0.7"
+value-traits = "0.3"
+zor_filter = { path = "../../../../audit/ZOR" }
+xorf = { path = "../../../../audit/xorf", default-features = false, features = ["binary-fuse"] }
 sux = { version = "=0.15.2", default-features = false }
 [profile.release]
 lto = "thin"
 
 # Keep benchmark dependencies separate from the library workspace.
 [workspace]
+
+[[bin]]
+name = "negative_pipeline"
+path = "src/bin/negative_pipeline.rs"
+required-features = ["experiments"]
+
+[[bin]]
+name = "qmer_opportunity"
+path = "src/bin/qmer_opportunity.rs"
+required-features = ["experiments"]
+
+[[bin]]
+name = "filter_compare"
+path = "src/bin/filter_compare.rs"
+required-features = ["experiments"]

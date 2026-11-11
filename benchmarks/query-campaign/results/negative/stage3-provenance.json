@@ -1,0 +1,16 @@
+{
+  "flags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "source_sha256": {
+    "campaign/negative-query/filter_compare": "68c372b9e61cbe68717c3c5927064ad5815cc357b1420b8c71dc908522680fe1",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/bin/filter_compare.rs": "dd45f14997d4787ebafc447c6525b4e818163cc33f5c4b79e29a388058f5fddd",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/src/common/qmer.rs": "3d189569cad8f3eed9f8ccc3d981946ab4be07ed3524548b951175f133f8aaf5",
+    "sshash-negative-campaign/benchmarks/query-campaign/sshash/Cargo.lock": "187edaec36e556891255e7f583f6dc3aab6e33166c4977c3b719724d225b773b",
+    "campaign/negative-query/run_stage3.py": "eac4bf575e6d1470ecac26066d866c178c0a75258b6a599416c7a2f961a9639f"
+  },
+  "note": "",
+  "upstream": {
+    "audit/ZOR": "2967cc4907de2af753a7208ef2c566fe045c8d41",
+    "audit/xorf": "60106e9fe010505564468eb159bd4e0ed8af89a6"
+  }
+}

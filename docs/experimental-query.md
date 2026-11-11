@@ -262,6 +262,9 @@ the fresh Gencode original/default/experimental comparison. Hashes and equality
 results are retained in `results/validation.json`. These are tested cases, not an
 exhaustive proof over every valid index.
 
+Historical note for the original campaign: PR #11 subsequently fixed this
+discrepancy and is included in the negative-query follow-up baseline.
+
 The audit found a pre-existing streaming-extension discrepancy: `kmer_offset`
 can remain stale while the other hit coordinates advance. This experiment
 preserves that behavior; it does not silently repair it. Streaming parity uses

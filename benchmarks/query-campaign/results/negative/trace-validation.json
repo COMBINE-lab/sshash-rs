@@ -1,0 +1,20 @@
+[
+  {
+    "dataset": "sim100k",
+    "pairs": 10000,
+    "rad_byte_identical": true,
+    "sha256": "eb7060b842e6efc7acfb5b876b5f3798c72984cc45fd4c08e6faec01cb1d44f0"
+  },
+  {
+    "dataset": "random100k",
+    "pairs": 10000,
+    "rad_byte_identical": true,
+    "sha256": "21110ec2bc2953f85934738066bd3590bbacdf46c1c63d2290fde1e4f2603a8b"
+  },
+  {
+    "dataset": "rna100k",
+    "pairs": 10000,
+    "rad_byte_identical": true,
+    "sha256": "5d8804128e66779766c497f7bc97b7519e7e75f6e70c1a2a545109b8145f5af3"
+  }
+]

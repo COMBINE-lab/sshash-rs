@@ -1,0 +1,51 @@
+{
+  "library": {
+    "passed": 156,
+    "ignored": 3,
+    "failed": 0,
+    "feature": "experimental-query",
+    "compiler_flags": "-C target-cpu=native -C llvm-args=-x86-branches-within-32B-boundaries"
+  },
+  "filter_harness": {
+    "passed": 1,
+    "failed": 0,
+    "profile": "release"
+  },
+  "clippy": {
+    "standard_target": "passed with -D warnings, all targets, experimental-query",
+    "native_target": "pre-existing clippy::needless_return in darray.rs:263; unchanged, standard-target check passes"
+  },
+  "trace_rad_byte_equality": [
+    {
+      "dataset": "sim100k",
+      "pairs": 10000,
+      "rad_byte_identical": true,
+      "sha256": "eb7060b842e6efc7acfb5b876b5f3798c72984cc45fd4c08e6faec01cb1d44f0"
+    },
+    {
+      "dataset": "random100k",
+      "pairs": 10000,
+      "rad_byte_identical": true,
+      "sha256": "21110ec2bc2953f85934738066bd3590bbacdf46c1c63d2290fde1e4f2603a8b"
+    },
+    {
+      "dataset": "rna100k",
+      "pairs": 10000,
+      "rad_byte_identical": true,
+      "sha256": "5d8804128e66779766c497f7bc97b7519e7e75f6e70c1a2a545109b8145f5af3"
+    }
+  ],
+  "contracts": {
+    "deferred_scalar_batch": "all result fields and order",
+    "qmer_and_independent_minimizer_filter": "membership, every positive result field and order; not legacy negative hints",
+    "full_filters": "every inserted key checked for false negatives",
+    "direct_filter_control": "Full negative and positive fields for always-pass; membership and all positive fields for complete filters; K21/K31/K63, resets, ambiguous/lowercase and both strands in library tests."
+  },
+  "mapping_performance": "No end-to-end new-filter or batched mapper speedup claimed; only replay/component timings.",
+  "campaign": {
+    "trials": 14265,
+    "accepted": 14220,
+    "insufficient_cells_excluded": 7,
+    "archive_round_trip": "all trial rows and acceptance decisions identical"
+  }
+}
