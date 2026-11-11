@@ -218,20 +218,51 @@ retain successful extension and same-minimizer reuse, then batch the independent
 reads that need new seeds. This is a separate scheduler experiment from changing
 the fingerprint layout.
 
-## Evidence and remaining controls
+## Final layout and control measurements
+
+The palindrome original/prototype/final/final/prototype/original control has
+32–36 accepted trials per pooled cell. Relative to PR #10, the final seven-bit
+streaming path was 12.720 vs 12.781 ns/window on random reads and 9.784 vs 9.800
+on real reads, but 20.387 vs 19.598 on 5%-substitution reads (4.0% slower).
+Configurability is therefore not established as cost-free. These observations
+support keeping the simpler original layout as the production baseline while
+retaining this API as an opt-in experiment.
+
+Final Gencode streaming medians, ns/input window (18 accepted trials per cell):
+
+| Layout | Random | Real | Payload bytes |
+|---|---:|---:|---:|
+| Off | 25.916 | 11.775 | 0 |
+| Bits7 | 12.922 | 9.848 | 13,228,125 |
+| Packed4 | 13.640 | 10.175 | 6,614,063 |
+| Byte255 | 12.939 | 9.946 | 13,228,125 |
+| Wide16 | 13.176 | 9.962 | 26,456,250 |
+
+Packed4 halves tag memory at a 5.6% random-stream and 3.3% real-stream cost on
+this index. Wider tags did not improve either workload. Mutation workloads do
+not rank layouts uniformly, so these are workload-specific observations.
+
+The human sweep completed all full-field checks and has at least five accepted
+trials per pooled cell. However, individual timings vary by up to roughly 3x,
+and the reverse Bits7 round retains only one random-stream trial. Pooled human
+medians therefore do **not** establish a reliable width ranking. The records
+retain each round separately; quiet CPU telemetry is necessary but insufficient
+to establish stable memory-system timing. Subsequent experiments aggregate at
+least five million query windows per trial to reduce short-interval noise.
+
+## Evidence and validation
 
 [Trial records and attribution](../benchmarks/query-campaign/results/fingerprint-tuning.json)
 and [source/binary provenance](../benchmarks/query-campaign/results/fingerprint-tuning-provenance.json)
-retain the completed SBWT experiment and both indices' deterministic diagnostics.
-The SBWT harness's SSHash comparator was the first configurable prototype; its
-SSHash timing rows are historical and do not establish the final candidate's
-performance. The four SBWT APIs are unchanged by that library revision.
+retain the completed SBWT experiment, matched controls, final layout sweeps,
+and both indices' diagnostics. Full-field equality passed in every sweep.
+The SBWT harness's SSHash comparator was the first configurable prototype;
+its SSHash rows do not establish the final candidate's performance. The four
+SBWT APIs are unchanged by that library revision.
 
-The final layout sweeps and matched original/prototype/final controls are pending
-a quiet host. Consequently this draft does not claim a speedup from configurable
-layouts or establish their overhead relative to PR #10. The seven-bit default is
-retained. All feature-enabled library tests (152 passed, 3 ignored) and Clippy
-with warnings denied pass; the default workspace suite passed (154, 3 ignored)
-before the feature-only storage revision. New Rust files pass formatting checks;
-the workspace-wide formatting check reports existing differences outside this
-change. No new Piscem mapping measurements are included.
+All feature-enabled library tests (152 passed, 3 ignored) and Clippy with
+warnings denied pass; the default workspace suite passed (154, 3 ignored)
+before the feature-only storage revision. New Rust files pass formatting;
+the workspace-wide check reports existing differences outside this change.
+No new Piscem mapping measurements are included. This remains a research draft
+because the default-path overhead and human timing stability are unresolved.

@@ -37,11 +37,17 @@
   },
   "candidate_commit": "8adec6971fbb0f6e4d46f4d7e3c15e6da3cd842f",
   "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14), LLVM 22.1.6",
-  "status": "SBWT ablation and deterministic attribution complete; final-layout timing controls pending quiet host",
+  "status": "complete; human layout rankings inconclusive due dispersion and asymmetric accepted rounds; default-path sub5 streaming regression prevents cost-free configurability claim",
   "published_runs": [
-    "filter-sbwt-ablation",
-    "filter-gencode-layouts (diagnostics only)",
-    "filter-human-layouts (diagnostics only)"
+    "filter-gencode-control-final-2",
+    "filter-gencode-control-final-3",
+    "filter-gencode-control-original-0",
+    "filter-gencode-control-original-5",
+    "filter-gencode-control-prototype-1",
+    "filter-gencode-control-prototype-4",
+    "filter-gencode-final-layouts",
+    "filter-human-final-layouts",
+    "filter-sbwt-ablation"
   ],
   "notes": [
     "SBWT timing uses the enum prototype for its SSHash comparator; the four SBWT APIs and their synthetic index are unchanged.",
