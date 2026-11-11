@@ -22,6 +22,8 @@ jobs:
         run: cargo test --workspace
       - name: cargo test (release)
         run: cargo test --workspace --release
+      - name: experimental query contracts and documentation examples
+        run: cargo test -p sshash-lib --features experimental-query --locked
       - name: heavy minimizer property grid
         run: cargo test --release -p sshash-lib --test minimizer_properties -- --ignored
       - name: clippy

@@ -1,0 +1,15 @@
+[package]
+name = "sshash-query-campaign"
+version = "0.1.0"
+edition = "2024"
+[features]
+experiments = ["sshash-lib/experimental-query"]
+[dependencies]
+sshash-lib = { path = "../../../crates/sshash-lib" }
+needletail = "0.7"
+sux = { version = "=0.15.2", default-features = false }
+[profile.release]
+lto = "thin"
+
+# Keep benchmark dependencies separate from the library workspace.
+[workspace]
