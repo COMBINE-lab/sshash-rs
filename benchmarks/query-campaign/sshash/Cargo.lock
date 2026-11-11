@@ -1289,6 +1289,7 @@ dependencies = [
  "needletail",
  "sshash-lib",
  "sux",
+ "value-traits",
 ]
 
 [[package]]

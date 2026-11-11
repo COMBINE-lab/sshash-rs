@@ -1,5 +1,9 @@
 # Query campaign reproduction
 
+For the subsequent configurable-filter and SBWT skipping/queuing experiments,
+see [the follow-up design](../../docs/fingerprint-tuning.md) and the additional
+commands at the end of this file. Original measurements below remain historical.
+
 These two standalone Cargo packages preserve the measurement loops from the
 2026-11-11 campaign. Dependency paths were made portable, comments expanded, and
 Rust formatting applied after measurement. The library's sequence-prefetch loop
@@ -123,7 +127,8 @@ therefore equal); aggregate across `TRIAL` repetitions for the final median.
 
 ## Quiet-machine protocol and records
 
-The harnesses do **not** gate on system activity themselves. Stop other owned
+The original harnesses do **not** gate on system activity themselves. The filter
+follow-up adds an optional cooperative runner, described below. Stop other owned
 builds/tests, choose an idle physical core, and monitor `/proc/stat` with the SMT
 sibling identified from sysfs. Do not terminate unrelated users' workloads.
 For the recorded campaign we required three consecutive 10-second samples with
@@ -152,3 +157,83 @@ The original raw logs, telemetry, datasets, and result vectors are retained in
 the local campaign archive, not distributed in this repository. Published records
 allow inspection of the reported samples but do not independently reconstruct
 the original host's activity. New runs must collect their own telemetry.
+
+## Fingerprint layout and SBWT ablations
+
+These commands use the same compiler/flags/quiet-host policy as above. Run the
+programs one at a time, pin them to an idle physical core, and record CPU telemetry.
+The example CPU 24 has SMT sibling 88 on the measured host.
+
+```bash
+cargo build --manifest-path benchmarks/query-campaign/sshash/Cargo.toml \
+  --bin filter_layouts --features layouts --release --locked
+REPS=9 python3 benchmarks/query-campaign/run_filter_quiet.py \
+  --logs /tmp/query-logs --cpu 24 filter-layouts \
+  benchmarks/query-campaign/sshash/target/release/filter_layouts \
+  /data/index 10000 /data/reads_1.fq
+
+cargo build --manifest-path benchmarks/query-campaign/sbwt/Cargo.toml \
+  --bin ablation --release --locked
+RAYON_NUM_THREADS=4 taskset -c 24 \
+  benchmarks/query-campaign/sbwt/target/release/ablation \
+  20000000 10000 reorient > /tmp/sbwt-ablation.log
+```
+
+`filter_layouts` takes an existing k=31 index, optional read count (default 10k),
+and optional real FASTX file. It uses the original campaign's deterministic
+SPSS-string sampling and 0/1/5/100% mutation workloads. `DIAG` rows count all
+valid-window and minimizer-run-head outcomes before timing; no counters are added
+to the library. Each row gives workload, run-head flag, found flag, bucket class,
+window count, and pass counts for Packed4/Bits7/Byte255/Wide16. These counts describe
+potential filter probes, not actual MPHF calls during successful extension.
+
+`EXACT` confirms complete result-vector equality for scalar, batch-32, and
+streaming methods before timing each layout. Point results and streaming results
+use their respective unfiltered oracle. Timed streaming consumes IDs; timed point
+methods allocate/materialize full result vectors, identically in the control and
+candidate builds. Each method receives an untimed warmup. Method and workload
+order rotate; layouts run off/7/4/255/16 then 16/255/4/7/off. Construction is untimed
+and separately logged as `BUILD`; each transition disables the old table first.
+`LAYOUT` records round, layout, workload, method, repetition, query count, ns/query,
+and wall start/end for joining with telemetry.
+
+For an original-layout control, build this **same harness source** with
+`--features experiments` instead of `layouts`. This selects only off/7/7/off and
+compiles without references to the new API, so it also works against PR #10's
+library. Point the manifest dependency to that checkout for the original build,
+restore it for the candidate, and preserve each binary. Use a balanced order with
+`NO_DIAG=1`; the recorded follow-up uses original/prototype/final/final/prototype/
+original to distinguish the first configurable prototype from the revised default
+fast path. Keep the build path, compiler, flags, and workload arguments identical.
+Do not change the production dependency manifest or commit machine-specific paths.
+
+The `ablation` binary retains the original synthetic construction and checks and
+adds scalar-no-skip, scalar-look-ahead-skip, and queued-no-skip variants, using
+the original queued-look-ahead-skip as the fourth comparison. All eight total
+variants rotate over nine repetitions. Additional variants are validated by
+complete callback position/rank vectors. Untimed `WORK` rows report workload,
+skip flag, characters, continuations, successful continuations, restarts, prefix
+table hits, and restart extensions, using the scalar APIs' built-in `COUNT=true`.
+Timed paths use `COUNT=false`; counts are not presented as instrumentation of the
+queued implementation. The rank representation and prefix table stay fixed in
+this comparison; queued APIs also change prefetch and rank-operation code paths.
+
+`summarize_filters.py LOG_DIRECTORY OUTPUT_JSON` retains individual decisions
+and aggregates only quiet timings (minimum five per reported cell). It expects
+`filter-*.log` files with matching `*-cpu.jsonl` telemetry, using the original
+runner schema (`time`, `outside_busy_cpus`, and `sibling.busy`). Without telemetry,
+no trial is accepted. Diagnostic and correctness rows are always retained.
+
+The Linux `run_filter_quiet.py` runner identifies SMT siblings from sysfs, waits
+for three quiet ten-second samples, pins the child to the requested CPU, and logs
+per-second host/sibling activity. It passes `QUERY_QUIET_FILE` to `filter_layouts`;
+that harness waits outside validation, warmup, and timing until three consecutive
+monitor samples satisfy the timed acceptance criteria. If contention begins
+during a trial, the summarizer still rejects it. The runner neither signals nor
+changes other processes. Standalone runs without this environment variable do
+not pause; the SBWT harness uses the initial gate and post-hoc rejection only.
+
+Use labels beginning `filter-` so the summarizer discovers the logs. A controller
+launching several binaries under one runner must associate its common telemetry
+with every child log (the recorded controller uses hard links). Build all binaries
+before starting the runner; do not compile or test alongside accepted timings.

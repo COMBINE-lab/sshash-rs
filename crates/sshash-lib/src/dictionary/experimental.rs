@@ -13,21 +13,115 @@ use super::*;
 use crate::streaming_query::LookupResult;
 use sux::utils::prefetch_index;
 
-#[inline]
-/// Seven-bit tag of a canonical minimizer, independent of its MPHF address.
+/// Storage policy for the derived minimizer-absence filter.
 ///
-/// The SplitMix64 finalizer mixes all bases before masking. This is a deterministic
-/// non-cryptographic mixer, not a guaranteed-uniform random fingerprint: the
-/// often-useful 1/128 collision estimate is a model, not a correctness assumption.
-/// Values 0..=127 are tags; 128 is reserved for unconditional bypass.
-pub(super) fn fingerprint(value: u64) -> u8 {
-    // Mix all bases; using low bits directly biases selected minimizers.
+/// Available with `experimental-query`. All layouts preserve exact query results;
+/// they trade tag footprint and lookup arithmetic against false passes. Rates
+/// below assume well-mixed absent selected minima landing in light buckets, not
+/// arbitrary absent k-mers. Heavy and empty buckets always bypass filtering.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BucketFingerprintLayout {
+    /// Two four-bit entries per byte: 15 tags and a bypass sentinel (about 1/15).
+    /// An odd bucket count leaves the final high nibble unused.
+    Packed4,
+    /// One byte per bucket: 128 tags and bypass value 128 (about 1/128).
+    /// This is the original layout and remains the default.
+    #[default]
+    Bits7,
+    /// One byte per bucket: 255 tags and bypass value 255 (about 1/255).
+    /// Tag calculation uses reduction modulo 255 instead of a bit mask.
+    Byte255,
+    /// Two bytes per bucket: 65,535 tags and bypass value 65,535 (about 1/65,535).
+    /// This reduces collisions but doubles the tag working set.
+    Wide16,
+}
+
+/// Deterministic SplitMix64 finalizer; collision estimates are models, not
+/// correctness assumptions or adversarial guarantees. All bases affect the tag.
+#[inline]
+fn fingerprint_hash(value: u64) -> u64 {
     let mut x = value;
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58476d1ce4e5b9);
     x ^= x >> 27;
     x = x.wrapping_mul(0x94d049bb133111eb);
-    ((x ^ (x >> 31)) & 127) as u8
+    x ^ (x >> 31)
+}
+
+/// Encode optional exact keys; None marks an empty/heavy bucket. All layouts
+/// retain the original boxed byte storage. Construction is single-pass and
+/// allocates only the requested payload; Wide16 stores little-endian pairs.
+fn build_tags(
+    layout: BucketFingerprintLayout,
+    keys: impl ExactSizeIterator<Item = Option<u64>>,
+) -> Box<[u8]> {
+    match layout {
+        BucketFingerprintLayout::Packed4 => {
+            let mut tags = vec![0_u8; keys.len().div_ceil(2)];
+            for (i, key) in keys.enumerate() {
+                let tag = key.map_or(15, |x| (fingerprint_hash(x) % 15) as u8);
+                tags[i / 2] |= tag << (4 * (i % 2));
+            }
+            tags.into_boxed_slice()
+        }
+        BucketFingerprintLayout::Bits7 => keys
+            .map(|x| x.map_or(128, |v| (fingerprint_hash(v) & 127) as u8))
+            .collect(),
+        BucketFingerprintLayout::Byte255 => keys
+            .map(|x| x.map_or(255, |v| (fingerprint_hash(v) % 255) as u8))
+            .collect(),
+        BucketFingerprintLayout::Wide16 => {
+            let mut tags = vec![
+                0_u8;
+                keys.len()
+                    .checked_mul(2)
+                    .expect("fingerprint table too large")
+            ];
+            for (i, key) in keys.enumerate() {
+                let tag = key.map_or(65535, |v| (fingerprint_hash(v) % 65535) as u16);
+                tags[2 * i..2 * i + 2].copy_from_slice(&tag.to_le_bytes());
+            }
+            tags.into_boxed_slice()
+        }
+    }
+}
+
+/// The caller has checked the bucket ID against the dictionary bounds and the
+/// table uses the supplied layout. True only admits a bucket to verification.
+#[inline(always)]
+pub(super) fn may_contain(
+    tags: &[u8],
+    layout: BucketFingerprintLayout,
+    id: usize,
+    key: u64,
+) -> bool {
+    // Keep the original seven-bit check small enough to stay in the caller.
+    // The first prototype outlined the whole four-way match, adding a call and
+    // spills even for the default. Alternative arithmetic stays in a helper.
+    if layout == BucketFingerprintLayout::Bits7 {
+        let tag = tags[id];
+        return tag >= 128 || tag == (fingerprint_hash(key) & 127) as u8;
+    }
+    may_contain_other(tags, layout, id, key)
+}
+
+#[inline(never)]
+fn may_contain_other(tags: &[u8], layout: BucketFingerprintLayout, id: usize, key: u64) -> bool {
+    match layout {
+        BucketFingerprintLayout::Bits7 => unreachable!("handled by the inline default path"),
+        BucketFingerprintLayout::Packed4 => {
+            let tag = (tags[id / 2] >> (4 * (id % 2))) & 15;
+            tag == 15 || tag == (fingerprint_hash(key) % 15) as u8
+        }
+        BucketFingerprintLayout::Byte255 => {
+            let tag = tags[id];
+            tag == 255 || tag == (fingerprint_hash(key) % 255) as u8
+        }
+        BucketFingerprintLayout::Wide16 => {
+            let tag = u16::from_le_bytes(tags[2 * id..2 * id + 2].try_into().unwrap());
+            tag == 65535 || tag == (fingerprint_hash(key) % 65535) as u16
+        }
+    }
 }
 
 impl Dictionary {
@@ -61,8 +155,9 @@ impl Dictionary {
     ///
     /// The table is not serialized: saving with the filter enabled produces the
     /// same index files, and loading them leaves it disabled. Disable it with
-    /// [`Self::disable_bucket_fingerprints`]. The fixed seven-bit width is the
-    /// measured baseline, not a configurable or proven-optimal layout.
+    /// [`Self::disable_bucket_fingerprints`]. This method selects the original seven-bit layout. Use
+    /// [`Self::enable_bucket_fingerprints_with_layout`] to choose another measured
+    /// memory/collision tradeoff; no layout is universally optimal.
     ///
     /// # Example
     ///
@@ -84,19 +179,35 @@ impl Dictionary {
     /// # }
     /// ```
     pub fn enable_bucket_fingerprints(&mut self) -> usize {
-        let tags: Vec<u8> = (0..self.index.num_buckets())
-            .map(|id| {
-                let (begin, end) = self.index.locate_bucket(id);
-                if begin == end || ceil_log2((end - begin) as u64) > MIN_L {
-                    return 128;
-                }
-                let pos = self.index.offsets.index_value(begin);
-                let value = self.spss.decode_mmer_at(pos, self.m);
-                fingerprint(value.min(crate::minimizer::reverse_complement_mmer(value, self.m)))
-            })
-            .collect();
+        self.enable_bucket_fingerprints_with_layout(BucketFingerprintLayout::Bits7)
+    }
+
+    /// Enable or replace the derived filter with an explicit storage layout.
+    ///
+    /// Shares the exactness, threading, serialization, and lifecycle contracts of
+    /// [`Self::enable_bucket_fingerprints`]. The retained payload is `ceil(n/2)`,
+    /// `n`, `n`, or `2*n` bytes for Packed4, Bits7, Byte255, or Wide16 respectively,
+    /// where n is the bucket count. Returns these allocated payload bytes.
+    /// Construction reads the index once and builds only the requested layout;
+    /// the previous filter stays live until replacement. The layout dispatch is
+    /// on the query path, so measure on your target before choosing a policy.
+    pub fn enable_bucket_fingerprints_with_layout(
+        &mut self,
+        layout: BucketFingerprintLayout,
+    ) -> usize {
+        let keys = (0..self.index.num_buckets()).map(|id| {
+            let (begin, end) = self.index.locate_bucket(id);
+            if begin == end || ceil_log2((end - begin) as u64) > MIN_L {
+                return None;
+            }
+            let pos = self.index.offsets.index_value(begin);
+            let value = self.spss.decode_mmer_at(pos, self.m);
+            Some(value.min(crate::minimizer::reverse_complement_mmer(value, self.m)))
+        });
+        let tags = build_tags(layout, keys);
         let bytes = tags.len();
-        self.bucket_fingerprints = Some(tags.into_boxed_slice());
+        self.bucket_fingerprints = Some(tags);
+        self.bucket_fingerprint_layout = layout;
         bytes
     }
 
@@ -213,5 +324,35 @@ impl Dictionary {
         std::array::from_fn(|i| {
             self.lookup_in_bucket(&kmers[i], &rcs[i], minis[i], bounds[i], None)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_odd_tail_and_bypass_do_not_change_neighboring_entries() {
+        let keys = [Some(123), None, Some(9876543), Some(42), None];
+        let packed = build_tags(BucketFingerprintLayout::Packed4, keys.into_iter());
+        assert_eq!(packed.len(), 3);
+        for (id, key) in keys.iter().enumerate() {
+            for query in 0..1000 {
+                let expected = key
+                    .is_none_or(|key| fingerprint_hash(key) % 15 == fingerprint_hash(query) % 15);
+                assert_eq!(
+                    may_contain(&packed, BucketFingerprintLayout::Packed4, id, query),
+                    expected
+                );
+            }
+        }
+        for layout in [
+            BucketFingerprintLayout::Packed4,
+            BucketFingerprintLayout::Bits7,
+            BucketFingerprintLayout::Byte255,
+            BucketFingerprintLayout::Wide16,
+        ] {
+            assert_eq!(build_tags(layout, [].into_iter()).len(), 0);
+        }
     }
 }

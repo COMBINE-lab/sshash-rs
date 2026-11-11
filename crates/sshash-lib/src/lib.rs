@@ -34,6 +34,8 @@ pub use minimizers_control_map::MinimizersControlMap;
 pub use mphf_config::{MphfBuild, Offline};
 pub use streaming_query::{LookupResult, StreamingQuery};
 pub use dictionary::Dictionary;
+#[cfg(feature = "experimental-query")]
+pub use dictionary::BucketFingerprintLayout;
 pub use kmer_dict_trait::{KmerDictionary, KmerStreamingQuery};
 pub use builder::{BuildConfiguration, CfSegData, DictionaryBuilder, parse_cf_seg};
 pub use partitioned_mphf::PartitionedMphf;

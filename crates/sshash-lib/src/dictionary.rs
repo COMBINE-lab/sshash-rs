@@ -18,16 +18,21 @@ use tracing::info;
 
 #[cfg(feature = "experimental-query")]
 mod experimental;
+#[cfg(feature = "experimental-query")]
+pub use experimental::BucketFingerprintLayout;
 
 /// The main dictionary structure
 ///
 /// Note: Serialization support is limited due to underlying types.
 /// Use custom save/load methods instead.
 pub struct Dictionary {
-    /// Optional derived tags indexed by minimizer MPHF bucket ID. Light buckets
-    /// hold 0..=127; 128 bypasses filtering. Never part of the saved index.
+    /// Optional derived tags indexed by minimizer MPHF bucket ID. Each layout
+    /// reserves a bypass value for heavy/empty buckets. Never serialized.
     #[cfg(feature = "experimental-query")]
     bucket_fingerprints: Option<Box<[u8]>>,
+    /// Interpretation of the derived bytes, ignored while the filter is disabled.
+    #[cfg(feature = "experimental-query")]
+    bucket_fingerprint_layout: BucketFingerprintLayout,
 
     /// Encoded string storage
     spss: SpectrumPreservingStringSet,
@@ -98,6 +103,8 @@ impl Dictionary {
         Self {
             #[cfg(feature = "experimental-query")]
             bucket_fingerprints: None,
+            #[cfg(feature = "experimental-query")]
+            bucket_fingerprint_layout: BucketFingerprintLayout::Bits7,
             spss,
             control_map,
             index,
@@ -711,6 +718,8 @@ impl Dictionary {
         Ok(Dictionary {
             #[cfg(feature = "experimental-query")]
             bucket_fingerprints: None,
+            #[cfg(feature = "experimental-query")]
+            bucket_fingerprint_layout: BucketFingerprintLayout::Bits7,
             spss,
             control_map,
             index,
@@ -748,8 +757,7 @@ impl Dictionary {
         if let Some(tags) = &self.bucket_fingerprints {
             // Heavy buckets bypass the filter to preserve their conservative
             // minimizer_found result, including on absent queries.
-            let tag = tags[id];
-            if tag < 128 && tag != experimental::fingerprint(_minimizer) {
+            if !experimental::may_contain(tags, self.bucket_fingerprint_layout, id, _minimizer) {
                 return false;
             }
         }

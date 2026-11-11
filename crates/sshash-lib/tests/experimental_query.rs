@@ -7,7 +7,7 @@
 //! their pre-existing kmer_offset behavior can differ on successful extensions.
 use sshash_lib::builder::{config::BuildConfiguration, dictionary_builder::DictionaryBuilder};
 use sshash_lib::kmer::KmerBits;
-use sshash_lib::{Dictionary, Kmer};
+use sshash_lib::{BucketFingerprintLayout, Dictionary, Kmer};
 
 fn dna(n: usize, rng: &mut u64) -> String {
     (0..n)
@@ -64,14 +64,24 @@ where
     let after = tmp.path().join("after");
     d.save(&before).unwrap();
     let base_bits = d.num_bits();
-    for filtered in [false, true] {
-        if filtered {
-            assert_eq!(d.enable_bucket_fingerprints(), d.num_minimizers() as usize);
+    for layout in [
+        None,
+        Some(BucketFingerprintLayout::Packed4),
+        Some(BucketFingerprintLayout::Bits7),
+        Some(BucketFingerprintLayout::Byte255),
+        Some(BucketFingerprintLayout::Wide16),
+    ] {
+        let n = d.num_minimizers() as usize;
+        let bytes = match layout {
+            None => 0,
+            Some(BucketFingerprintLayout::Packed4) => n.div_ceil(2),
+            Some(BucketFingerprintLayout::Wide16) => n * 2,
+            _ => n,
+        };
+        if let Some(layout) = layout {
+            assert_eq!(d.enable_bucket_fingerprints_with_layout(layout), bytes);
         }
-        assert_eq!(
-            d.num_bits(),
-            base_bits + if filtered { d.num_minimizers() * 8 } else { 0 }
-        );
+        assert_eq!(d.num_bits(), base_bits + bytes as u64 * 8);
         assert_eq!(
             stream(&d),
             want_stream,
@@ -89,6 +99,13 @@ where
             }
         }
         assert!(d.query_batch::<K, 0, true>(&[]).is_empty());
+        d.save(&after).unwrap();
+        for ext in ["ssi", "ssi.mphf"] {
+            assert_eq!(
+                std::fs::read(before.with_extension(ext)).unwrap(),
+                std::fs::read(after.with_extension(ext)).unwrap()
+            );
+        }
     }
     d.save(&after).unwrap();
     for ext in ["ssi", "ssi.mphf"] {

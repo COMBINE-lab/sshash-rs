@@ -1,5 +1,9 @@
 # Experimental batching and minimizer fingerprints
 
+The original campaign below used the fixed seven-bit filter. The
+[layout follow-up](fingerprint-tuning.md) adds explicit runtime storage choices,
+filter-outcome attribution, and a more targeted SBWT skipping/queuing comparison.
+
 The `experimental-query` library feature adds two independent query experiments:
 fixed-size batches of independent seeds and an optional minimizer-absence filter.
 Neither changes index construction, IDs, orientation, or saved index bytes. The
@@ -219,7 +223,9 @@ fingerprint-width knobs, compare a small set of explicit layouts:
 | Packed nibble, 15 tags + sentinel | 0.5 | 1/15 | Smaller working set; more full verifications |
 | 16-bit entry, 65,535 tags + sentinel | 2 | 1/65,535 | Fewer collisions; twice the tag footprint |
 
-Only the first row is implemented. Rates assume truly absent selected minima
+Only the first row was implemented in the original campaign; the
+[follow-up](fingerprint-tuning.md) implements the other three for comparison.
+Rates assume truly absent selected minima
 landing in light buckets and a uniform independent tag model. Wider tags do
 nothing for genuine indexed minima or heavy-bucket bypasses. Seven bits already
 reject about 99.22% of eligible misses under that model, so width alone cannot
