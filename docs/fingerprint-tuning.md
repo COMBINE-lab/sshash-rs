@@ -200,9 +200,18 @@ cost belong in any comparison. Smaller q makes absence rarer; larger q increases
 the universe or the size of an approximate set. Skipping also interacts with the
 API: the existing per-window result includes a conservative `minimizer_found`
 hint. Proving k-mer absence alone does not reproduce that hint, particularly
-when the current lookup routes an absent minimum to a heavy bucket. A new
-membership-only bulk interface could avoid returning these hints, but substituting
-it into Piscem requires an explicit contract and downstream output validation.
+when the current lookup routes an absent minimum to a heavy bucket. More than a
+field-equality issue is involved: `StreamingQuery::seed_with_dict` uses a false
+hint to reject subsequent k-mers carrying the same minimizer. Setting it false
+from a substring-only absence certificate could poison that memo and suppress a
+later genuine hit with an indexed minimizer. The certificate must not be treated
+as proof that the selected minimizer is missing.
+
+The current Piscem mapper does not directly branch on this hint; SSHash uses it
+inside its streaming state. A new bulk interface reporting positive positions
+and exact hit metadata could avoid returning negative hints, with separate state
+rules for skipping. Substituting it into Piscem still requires an explicit
+ordering/lookup contract and downstream output validation.
 
 The existing rolling stream cannot simply be replaced with independent batches:
 retain successful extension and same-minimizer reuse, then batch the independent
