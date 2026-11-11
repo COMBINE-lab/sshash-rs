@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Streaming queries now advance `LookupResult::kmer_offset` on successful
+  forward and reverse extensions. Previously it stayed at the last dictionary
+  seed's position while the k-mer IDs advanced. The field is an absolute **base**
+  offset in the concatenated SPSS, not a bit offset; its documentation is corrected.
+  This intentionally corrects streamed offsets (including the CLI lookup dump).
+  Point lookups, membership, IDs, orientation, and saved index formats are unchanged.
+
 ## [0.8.1] - 2026-10-30
 
 ### Performance

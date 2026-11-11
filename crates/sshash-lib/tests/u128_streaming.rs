@@ -54,18 +54,9 @@ where
             for window in bytes.windows(K) {
                 let streamed = engine.lookup(window);
                 let point = dict.query_from_str::<K>(std::str::from_utf8(window).unwrap());
-                assert_eq!(streamed.kmer_id, point.kmer_id, "kmer_id, K={K}");
-                assert_eq!(
-                    streamed.kmer_id_in_string, point.kmer_id_in_string,
-                    "kmer_id_in_string, K={K}"
-                );
-                assert_eq!(
-                    streamed.kmer_orientation, point.kmer_orientation,
-                    "kmer_orientation, K={K}"
-                );
-                assert_eq!(streamed.string_id, point.string_id, "string_id, K={K}");
-                assert_eq!(streamed.string_begin, point.string_begin, "string_begin, K={K}");
-                assert_eq!(streamed.string_end, point.string_end, "string_end, K={K}");
+                // Include kmer_offset: comparing only the IDs and string bounds
+                // previously allowed a stale absolute offset on extensions.
+                assert_eq!(streamed, point, "all result fields, K={K}");
                 assert!(point.is_found(), "every input k-mer must be present, K={K}");
             }
             // Extensions must actually have happened, or this test proves nothing.

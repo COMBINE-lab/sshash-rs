@@ -19,7 +19,9 @@ pub struct LookupResult {
     pub kmer_id: u64,
     /// Relative k-mer ID within the string (0 <= kmer_id_in_string < string_size)
     pub kmer_id_in_string: u64,
-    /// Bit offset into the string data
+    /// Absolute base offset in the concatenated SPSS string data.
+    /// For a hit, equals `string_begin + kmer_id_in_string`, on either strand.
+    /// For a miss, equals `u64::MAX`.
     pub kmer_offset: u64,
     /// Orientation: +1 for forward, -1 for reverse complement
     pub kmer_orientation: i64,
@@ -253,13 +255,14 @@ where
 
         // Ground-truth check (debug builds): every streaming result — memo
         // answers included — must equal the corresponding point lookup on the
-        // fields C++ `equal_lookup_result` compares.
+        // fields C++ `equal_lookup_result` compares, plus the absolute base offset.
         #[cfg(debug_assertions)]
         {
             let point = dict.query::<K>(&self.kmer);
             debug_assert_eq!(self.result.kmer_id, point.kmer_id, "streaming != point (kmer_id)");
             if self.result.is_found() {
                 debug_assert_eq!(self.result.kmer_id_in_string, point.kmer_id_in_string);
+                debug_assert_eq!(self.result.kmer_offset, point.kmer_offset);
                 debug_assert_eq!(self.result.kmer_orientation, point.kmer_orientation);
                 debug_assert_eq!(self.result.string_id, point.string_id);
                 debug_assert_eq!(self.result.string_begin, point.string_begin);
@@ -456,6 +459,9 @@ where
     /// 2. Single-base comparison: only check the one new base instead of loading
     ///    and comparing a full k-mer. Correct because consecutive k-mers in a
     ///    string share K-1 bases.
+    ///
+    /// Successful extensions advance every position field, including the public
+    /// absolute base offset; it must not remain at the last dictionary seed.
     #[inline(always)]
     fn try_extend(&mut self, dict: &crate::dictionary::Dictionary) {
         if self.result.kmer_orientation > 0 {
@@ -476,6 +482,7 @@ where
                 self.num_extensions += 1;
                 self.result.kmer_id += 1;
                 self.result.kmer_id_in_string += 1;
+                self.result.kmer_offset += 1;
                 self.remaining_string_bases -= 1;
                 return;
             }
@@ -486,6 +493,7 @@ where
                 self.num_extensions += 1;
                 self.result.kmer_id -= 1;
                 self.result.kmer_id_in_string -= 1;
+                self.result.kmer_offset -= 1;
                 self.remaining_string_bases -= 1;
                 return;
             }
