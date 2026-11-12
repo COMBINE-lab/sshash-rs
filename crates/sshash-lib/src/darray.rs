@@ -93,6 +93,16 @@ impl DArray {
         cur_block.clear();
     }
 
+    /// Hint the inventories needed to select the zero-based `i`th indexed bit.
+    /// Callers use a valid select rank. This does not fetch the dependent bitvector
+    /// word or spill storage, and has no effect on the result of a later select.
+    /// Hints may be no-ops on targets not supported by sux.
+    #[cfg(feature = "experimental-query")]
+    pub(crate) fn prefetch_select(&self, i: usize) {
+        sux::utils::prefetch_index(&self.block_inventory, i / BLOCK_SIZE);
+        sux::utils::prefetch_index(&self.subblock_inventory, i / SUBBLOCK_SIZE);
+    }
+
     #[inline]
     pub fn select(&self, bitvec: &[u64], i: u64, negate: bool) -> u64 {
         debug_assert!(i < self.num_positions);

@@ -301,6 +301,18 @@ impl EliasFanoOffsets {
         (n, low_bit_width, low_bits, high_bits, high_bits_len, num_high_zeros, darray1, darray0)
     }
 
+    /// Hint select inventories and the first low-bit word for a valid offset `i`.
+    /// This is the first address-independent stage of access: high-bit locations
+    /// still depend on select metadata, and crossing low-bit words is not covered.
+    /// Architecture-dependent hints do not alter access or serialization.
+    #[cfg(feature = "experimental-query")]
+    pub(crate) fn prefetch_access(&self, i: usize) {
+        self.darray1.prefetch_select(i);
+        if self.low_bit_width > 0 {
+            sux::utils::prefetch_index(&self.low_bits, i * self.low_bit_width as usize / 64);
+        }
+    }
+
     #[inline(always)]
     fn get_low_bits(&self, i: usize) -> u64 {
         if self.low_bit_width == 0 {

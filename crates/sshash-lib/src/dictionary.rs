@@ -16,11 +16,19 @@ use crate::{
 use value_traits::slices::SliceByValue;
 use tracing::info;
 
+#[cfg(feature = "experimental-query")]
+mod experimental;
+
 /// The main dictionary structure
 ///
 /// Note: Serialization support is limited due to underlying types.
 /// Use custom save/load methods instead.
 pub struct Dictionary {
+    /// Optional derived tags indexed by minimizer MPHF bucket ID. Light buckets
+    /// hold 0..=127; 128 bypasses filtering. Never part of the saved index.
+    #[cfg(feature = "experimental-query")]
+    bucket_fingerprints: Option<Box<[u8]>>,
+
     /// Encoded string storage
     spss: SpectrumPreservingStringSet,
 
@@ -88,6 +96,8 @@ impl Dictionary {
         seed: u64,
     ) -> Self {
         Self {
+            #[cfg(feature = "experimental-query")]
+            bucket_fingerprints: None,
             spss,
             control_map,
             index,
@@ -290,9 +300,30 @@ impl Dictionary {
             None => self
                 .control_map
                 .lookup(mini.value)
-                .filter(|&id| id < self.index.num_buckets())
+                .filter(|&id| self.bucket_may_contain(id, mini.value))
                 .map(|id| self.index.locate_bucket(id)),
         };
+        self.lookup_in_bucket(kmer, kmer_rc, mini, bounds, cache)
+    }
+
+    /// Shared exact verification after scalar or batched bucket resolution.
+    /// `bounds` identifies the candidate bucket resolved from `mini.value`, or
+    /// is `None` for a certified miss; an MPHF candidate still needs verification.
+    /// Keeping candidate order here preserves IDs/orientation and negative hints.
+    /// `cache`, when supplied, belongs to this minimizer and retains verified
+    /// anchor information for subsequent streaming windows.
+    #[inline]
+    fn lookup_in_bucket<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        kmer_rc: &Kmer<K>,
+        mini: MinimizerInfo,
+        bounds: Option<(usize, usize)>,
+        cache: Option<&mut BucketCache>,
+    ) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
         let Some((begin, end)) = bounds else {
             let mut res = crate::streaming_query::LookupResult::not_found();
             res.minimizer_found = false;
@@ -541,9 +572,16 @@ impl Dictionary {
 
     /// Get total memory usage in bits
     pub fn num_bits(&self) -> u64 {
-        self.spss.num_bits()
+        let bits = self.spss.num_bits()
             + self.control_map.num_bits()
-            + self.index.num_bits()
+            + self.index.num_bits();
+        #[cfg(feature = "experimental-query")]
+        let bits = bits
+            + self
+                .bucket_fingerprints
+                .as_ref()
+                .map_or(0, |tags| tags.len() as u64 * 8);
+        bits
     }
 
     /// Print a detailed space breakdown of the index
@@ -671,6 +709,8 @@ impl Dictionary {
         index.skew_index.set_mphfs(mphfs);
 
         Ok(Dictionary {
+            #[cfg(feature = "experimental-query")]
+            bucket_fingerprints: None,
             spss,
             control_map,
             index,
@@ -696,6 +736,26 @@ impl Dictionary {
         crate::minimizer::compute_minimizer(kmer, kmer_rc, self.m, &self.hasher)
     }
 
+    /// Reject an invalid MPHF slot or a certified light-bucket minimizer mismatch.
+    /// `true` only admits the bucket to exact verification; it is not membership.
+    /// The table, when present, has exactly `index.num_buckets()` entries.
+    #[inline]
+    fn bucket_may_contain(&self, id: usize, _minimizer: u64) -> bool {
+        if id >= self.index.num_buckets() {
+            return false;
+        }
+        #[cfg(feature = "experimental-query")]
+        if let Some(tags) = &self.bucket_fingerprints {
+            // Heavy buckets bypass the filter to preserve their conservative
+            // minimizer_found result, including on absent queries.
+            let tag = tags[id];
+            if tag < 128 && tag != experimental::fingerprint(_minimizer) {
+                return false;
+            }
+        }
+        true
+    }
+
     // --- Streaming query helpers ---
 
     /// Resolve a minimizer to its bucket bounds, reusing `cache` when the
@@ -711,7 +771,7 @@ impl Dictionary {
         let bounds = self
             .control_map
             .lookup(mini_value)
-            .filter(|&id| id < self.index.num_buckets())
+            .filter(|&id| self.bucket_may_contain(id, mini_value))
             .map(|id| self.index.locate_bucket(id));
         cache.valid = true;
         cache.mini_value = mini_value;

@@ -1,0 +1,2102 @@
+[
+  {
+    "run": "gencode-final-default",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 216.47,
+    "minimum": 195.9614,
+    "maximum": 254.9956
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.578,
+    "minimum": 19.3044,
+    "maximum": 19.7147
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 152.3518,
+    "minimum": 134.2456,
+    "maximum": 197.8739
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 44.0609,
+    "minimum": 42.9517,
+    "maximum": 50.7411
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 106.1788,
+    "minimum": 93.4415,
+    "maximum": 128.2125
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 18.6457,
+    "minimum": 18.4065,
+    "maximum": 20.1378
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 226.5297,
+    "minimum": 198.366,
+    "maximum": 255.1208
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 30.683,
+    "minimum": 30.3717,
+    "maximum": 31.8886
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 191.7176,
+    "minimum": 170.6839,
+    "maximum": 243.6619
+  },
+  {
+    "run": "gencode-final-default",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 48.3323,
+    "minimum": 47.8329,
+    "maximum": 52.1989
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 133.2493,
+    "minimum": 132.1401,
+    "maximum": 145.0838
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 226.6377,
+    "minimum": 215.1993,
+    "maximum": 255.719
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.8837,
+    "minimum": 16.1226,
+    "maximum": 20.5647
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 143.7111,
+    "minimum": 142.0121,
+    "maximum": 156.704
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "positive",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 240.698,
+    "minimum": 218.5817,
+    "maximum": 303.7205
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "positive",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 16.8587,
+    "minimum": 16.3794,
+    "maximum": 20.7204
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 52.8602,
+    "minimum": 52.4349,
+    "maximum": 53.3338
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 148.9164,
+    "minimum": 121.2494,
+    "maximum": 173.578
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 46.2757,
+    "minimum": 44.8827,
+    "maximum": 47.7938
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 33.671,
+    "minimum": 33.3492,
+    "maximum": 35.3637
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "random",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 51.0791,
+    "minimum": 49.6287,
+    "maximum": 77.7356
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "random",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 17.4629,
+    "minimum": 16.6302,
+    "maximum": 18.2009
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 73.4788,
+    "minimum": 72.9662,
+    "maximum": 78.1643
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 120.9169,
+    "minimum": 101.4393,
+    "maximum": 128.8237
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 17.9671,
+    "minimum": 17.321,
+    "maximum": 18.6209
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 73.5517,
+    "minimum": 72.5421,
+    "maximum": 81.901
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "real",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 100.9603,
+    "minimum": 83.6455,
+    "maximum": 110.3086
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "real",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 15.4871,
+    "minimum": 15.0709,
+    "maximum": 15.8506
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 123.2145,
+    "minimum": 122.0265,
+    "maximum": 126.7421
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 223.8117,
+    "minimum": 213.9603,
+    "maximum": 255.226
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 29.2154,
+    "minimum": 28.8797,
+    "maximum": 33.5666
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 132.7629,
+    "minimum": 131.5721,
+    "maximum": 140.7906
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 233.2709,
+    "minimum": 212.479,
+    "maximum": 260.1219
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 30.8716,
+    "minimum": 26.1679,
+    "maximum": 31.2568
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 90.0419,
+    "minimum": 89.831,
+    "maximum": 93.5317
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 192.9366,
+    "minimum": 178.1484,
+    "maximum": 235.0969
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 46.2007,
+    "minimum": 45.6273,
+    "maximum": 49.099
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 95.6587,
+    "minimum": 95.1643,
+    "maximum": 99.9762
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 156.7001,
+    "minimum": 143.2564,
+    "maximum": 187.6528
+  },
+  {
+    "run": "gencode-final-experimental",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 32.3547,
+    "minimum": 31.8963,
+    "maximum": 33.4745
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 215.2566,
+    "minimum": 194.897,
+    "maximum": 261.5773
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 18.4346,
+    "minimum": 16.1017,
+    "maximum": 22.1233
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 148.1536,
+    "minimum": 125.2334,
+    "maximum": 185.7437
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 44.3648,
+    "minimum": 42.9564,
+    "maximum": 47.9193
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 103.5023,
+    "minimum": 90.778,
+    "maximum": 127.3351
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 16.0721,
+    "minimum": 15.6756,
+    "maximum": 17.6332
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 213.9085,
+    "minimum": 193.102,
+    "maximum": 265.2246
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 28.872,
+    "minimum": 28.4541,
+    "maximum": 36.4131
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 195.8764,
+    "minimum": 168.666,
+    "maximum": 242.4009
+  },
+  {
+    "run": "gencode-final-original",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 46.0836,
+    "minimum": 45.3161,
+    "maximum": 55.9813
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch16",
+    "n": 9,
+    "median": 530.701,
+    "minimum": 529.3842,
+    "maximum": 536.1564
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 619.0845,
+    "minimum": 614.8348,
+    "maximum": 625.1769
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 525.1581,
+    "minimum": 523.26,
+    "maximum": 531.8313
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch4",
+    "n": 9,
+    "median": 587.5501,
+    "minimum": 584.9988,
+    "maximum": 590.2181
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch64",
+    "n": 9,
+    "median": 526.9567,
+    "minimum": 523.8006,
+    "maximum": 530.7258
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch8",
+    "n": 9,
+    "median": 548.9515,
+    "minimum": 547.4184,
+    "maximum": 555.0935
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 836.8733,
+    "minimum": 827.7122,
+    "maximum": 889.647
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 48.0067,
+    "minimum": 47.9397,
+    "maximum": 50.1391
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch16",
+    "n": 9,
+    "median": 552.4091,
+    "minimum": 551.7575,
+    "maximum": 555.4702
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 644.1242,
+    "minimum": 638.5041,
+    "maximum": 647.5089
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 545.8711,
+    "minimum": 545.1313,
+    "maximum": 549.9202
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch4",
+    "n": 9,
+    "median": 599.0393,
+    "minimum": 596.7022,
+    "maximum": 605.2648
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch64",
+    "n": 9,
+    "median": 541.5274,
+    "minimum": 540.3839,
+    "maximum": 542.1193
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch8",
+    "n": 9,
+    "median": 572.242,
+    "minimum": 571.2429,
+    "maximum": 577.0286
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 863.9396,
+    "minimum": 837.2236,
+    "maximum": 900.3078
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "positive",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 53.0422,
+    "minimum": 48.0809,
+    "maximum": 53.7193
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch16",
+    "n": 8,
+    "median": 87.66205,
+    "minimum": 87.3309,
+    "maximum": 87.9747
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch16-no-prefetch",
+    "n": 8,
+    "median": 148.1714,
+    "minimum": 146.5423,
+    "maximum": 152.456
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch32",
+    "n": 8,
+    "median": 77.6964,
+    "minimum": 77.3329,
+    "maximum": 78.6045
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch4",
+    "n": 8,
+    "median": 160.2989,
+    "minimum": 158.7514,
+    "maximum": 164.6392
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch64",
+    "n": 8,
+    "median": 78.87535,
+    "minimum": 78.1298,
+    "maximum": 79.3871
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch8",
+    "n": 8,
+    "median": 115.0763,
+    "minimum": 114.646,
+    "maximum": 115.1652
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 8,
+    "median": 401.26025,
+    "minimum": 318.4331,
+    "maximum": 438.3958
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 8,
+    "median": 100.61175,
+    "minimum": 100.2463,
+    "maximum": 106.1481
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch16",
+    "n": 9,
+    "median": 49.5124,
+    "minimum": 48.037,
+    "maximum": 50.4816
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 50.5401,
+    "minimum": 50.0436,
+    "maximum": 51.4428
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 44.388,
+    "minimum": 44.2091,
+    "maximum": 44.865
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch4",
+    "n": 9,
+    "median": 63.1839,
+    "minimum": 58.4273,
+    "maximum": 73.0554
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch64",
+    "n": 9,
+    "median": 45.4951,
+    "minimum": 45.2962,
+    "maximum": 46.0415
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch8",
+    "n": 9,
+    "median": 51.1643,
+    "minimum": 48.0654,
+    "maximum": 52.6856
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 102.5756,
+    "minimum": 77.9274,
+    "maximum": 141.5486
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "random",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 42.3946,
+    "minimum": 40.5789,
+    "maximum": 49.2868
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch16",
+    "n": 9,
+    "median": 93.8425,
+    "minimum": 93.1853,
+    "maximum": 95.1675
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 106.5367,
+    "minimum": 105.8144,
+    "maximum": 111.9205
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 91.2344,
+    "minimum": 90.0894,
+    "maximum": 94.758
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch4",
+    "n": 9,
+    "median": 105.9992,
+    "minimum": 103.4001,
+    "maximum": 121.7786
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch64",
+    "n": 9,
+    "median": 88.5407,
+    "minimum": 88.0877,
+    "maximum": 91.9585
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch8",
+    "n": 9,
+    "median": 99.7241,
+    "minimum": 98.6501,
+    "maximum": 101.0
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 162.2291,
+    "minimum": 128.3779,
+    "maximum": 171.4709
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 18.375,
+    "minimum": 18.3128,
+    "maximum": 18.4145
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch16",
+    "n": 7,
+    "median": 98.6064,
+    "minimum": 96.9832,
+    "maximum": 99.0939
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch16-no-prefetch",
+    "n": 6,
+    "median": 99.6257,
+    "minimum": 99.0191,
+    "maximum": 100.7564
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch32",
+    "n": 7,
+    "median": 92.9001,
+    "minimum": 92.4198,
+    "maximum": 94.0121
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch4",
+    "n": 7,
+    "median": 105.323,
+    "minimum": 100.3805,
+    "maximum": 116.0666
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch64",
+    "n": 6,
+    "median": 90.7231,
+    "minimum": 90.0674,
+    "maximum": 91.1555
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch8",
+    "n": 7,
+    "median": 102.025,
+    "minimum": 100.4363,
+    "maximum": 104.6822
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "scalar",
+    "n": 7,
+    "median": 162.7038,
+    "minimum": 118.8951,
+    "maximum": 170.9049
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "real",
+    "filter": 1,
+    "method": "stream",
+    "n": 7,
+    "median": 16.4174,
+    "minimum": 16.388,
+    "maximum": 16.482
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch16",
+    "n": 9,
+    "median": 510.832,
+    "minimum": 507.7318,
+    "maximum": 521.2395
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 594.2639,
+    "minimum": 590.6603,
+    "maximum": 597.0438
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 507.8065,
+    "minimum": 502.8906,
+    "maximum": 511.7325
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch4",
+    "n": 9,
+    "median": 569.1844,
+    "minimum": 564.6779,
+    "maximum": 572.2792
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch64",
+    "n": 9,
+    "median": 508.2775,
+    "minimum": 502.4208,
+    "maximum": 509.3279
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch8",
+    "n": 9,
+    "median": 530.0769,
+    "minimum": 527.8489,
+    "maximum": 534.769
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 833.6939,
+    "minimum": 826.3837,
+    "maximum": 908.4564
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 81.4624,
+    "minimum": 81.3405,
+    "maximum": 86.1776
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch16",
+    "n": 9,
+    "median": 526.6473,
+    "minimum": 525.2488,
+    "maximum": 531.5046
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 601.8005,
+    "minimum": 597.7466,
+    "maximum": 611.6688
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 520.1204,
+    "minimum": 518.6941,
+    "maximum": 542.0414
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch4",
+    "n": 9,
+    "median": 572.7785,
+    "minimum": 568.5771,
+    "maximum": 579.7679
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch64",
+    "n": 9,
+    "median": 513.4586,
+    "minimum": 508.3205,
+    "maximum": 517.0664
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch8",
+    "n": 9,
+    "median": 540.5293,
+    "minimum": 537.8912,
+    "maximum": 556.7263
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 821.8222,
+    "minimum": 808.7916,
+    "maximum": 873.2033
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 74.827,
+    "minimum": 74.1631,
+    "maximum": 78.7141
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch16",
+    "n": 9,
+    "median": 385.4229,
+    "minimum": 384.2382,
+    "maximum": 388.8375
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 442.0002,
+    "minimum": 437.8532,
+    "maximum": 445.252
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 377.2244,
+    "minimum": 376.245,
+    "maximum": 385.3003
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch4",
+    "n": 9,
+    "median": 451.3304,
+    "minimum": 449.3941,
+    "maximum": 459.6137
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch64",
+    "n": 9,
+    "median": 377.1765,
+    "minimum": 376.0412,
+    "maximum": 380.6814
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch8",
+    "n": 9,
+    "median": 408.3052,
+    "minimum": 407.0052,
+    "maximum": 413.4417
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 762.7737,
+    "minimum": 750.6758,
+    "maximum": 799.2487
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 128.7938,
+    "minimum": 128.4255,
+    "maximum": 132.0174
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch16",
+    "n": 9,
+    "median": 385.1287,
+    "minimum": 384.0383,
+    "maximum": 390.0024
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch16-no-prefetch",
+    "n": 9,
+    "median": 420.1942,
+    "minimum": 418.5807,
+    "maximum": 448.6673
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 374.004,
+    "minimum": 373.0594,
+    "maximum": 382.4069
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch4",
+    "n": 9,
+    "median": 439.2279,
+    "minimum": 437.8301,
+    "maximum": 453.7912
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch64",
+    "n": 9,
+    "median": 372.5883,
+    "minimum": 370.4844,
+    "maximum": 378.9576
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch8",
+    "n": 9,
+    "median": 402.6062,
+    "minimum": 401.471,
+    "maximum": 404.8045
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 673.1389,
+    "minimum": 659.9116,
+    "maximum": 716.5511
+  },
+  {
+    "run": "human-experimental-v2",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 103.7489,
+    "minimum": 103.014,
+    "maximum": 106.1775
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "positive",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 524.6869,
+    "minimum": 523.0806,
+    "maximum": 531.9476
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 833.6539,
+    "minimum": 826.5592,
+    "maximum": 893.1736
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 51.0066,
+    "minimum": 50.9243,
+    "maximum": 51.576
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "positive",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 542.4437,
+    "minimum": 537.2127,
+    "maximum": 546.3049
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "positive",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 837.5923,
+    "minimum": 830.034,
+    "maximum": 892.3842
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "positive",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 51.5067,
+    "minimum": 51.1554,
+    "maximum": 56.1596
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "random",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 82.5458,
+    "minimum": 77.5509,
+    "maximum": 84.6785
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 424.5871,
+    "minimum": 322.7484,
+    "maximum": 496.5272
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 108.9647,
+    "minimum": 99.617,
+    "maximum": 111.0244
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "random",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 45.6924,
+    "minimum": 44.932,
+    "maximum": 46.6401
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "random",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 99.0476,
+    "minimum": 87.8479,
+    "maximum": 122.425
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "random",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 48.9675,
+    "minimum": 43.0306,
+    "maximum": 49.2011
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "real",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 92.7444,
+    "minimum": 91.8613,
+    "maximum": 97.1829
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 172.1952,
+    "minimum": 142.9625,
+    "maximum": 173.7054
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 21.3317,
+    "minimum": 21.1665,
+    "maximum": 21.4236
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "real",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 95.478,
+    "minimum": 92.5221,
+    "maximum": 98.4781
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "real",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 161.2442,
+    "minimum": 126.087,
+    "maximum": 162.7495
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "real",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 19.3791,
+    "minimum": 19.2395,
+    "maximum": 19.6053
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 509.122,
+    "minimum": 504.0281,
+    "maximum": 523.4302
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 839.6352,
+    "minimum": 826.8913,
+    "maximum": 868.7181
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 83.3074,
+    "minimum": 83.0011,
+    "maximum": 88.236
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 524.3942,
+    "minimum": 522.1346,
+    "maximum": 534.9946
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 826.667,
+    "minimum": 816.478,
+    "maximum": 877.3567
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub1",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 77.5887,
+    "minimum": 76.2572,
+    "maximum": 82.3895
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "batch32",
+    "n": 9,
+    "median": 384.555,
+    "minimum": 379.0379,
+    "maximum": 390.8355
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 761.0657,
+    "minimum": 755.2831,
+    "maximum": 788.4507
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 128.5643,
+    "minimum": 127.6163,
+    "maximum": 129.4568
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "batch32",
+    "n": 9,
+    "median": 382.4022,
+    "minimum": 374.9551,
+    "maximum": 392.0254
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "scalar",
+    "n": 9,
+    "median": 671.4318,
+    "minimum": 661.6698,
+    "maximum": 705.349
+  },
+  {
+    "run": "human-final-reverse",
+    "workload": "sub5",
+    "filter": 1,
+    "method": "stream",
+    "n": 9,
+    "median": 103.6868,
+    "minimum": 103.2647,
+    "maximum": 108.4958
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 827.4398,
+    "minimum": 820.8419,
+    "maximum": 868.5504
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 47.9077,
+    "minimum": 47.6215,
+    "maximum": 52.1881
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 413.1771,
+    "minimum": 353.8049,
+    "maximum": 465.4551
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 98.9148,
+    "minimum": 96.7736,
+    "maximum": 99.4912
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 162.1155,
+    "minimum": 130.1524,
+    "maximum": 170.8974
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 18.1946,
+    "minimum": 18.0143,
+    "maximum": 18.8639
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 824.7391,
+    "minimum": 813.4859,
+    "maximum": 869.6404
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 80.4391,
+    "minimum": 80.3718,
+    "maximum": 80.6729
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 757.6022,
+    "minimum": 754.1127,
+    "maximum": 808.9264
+  },
+  {
+    "run": "human-original-v2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 127.5397,
+    "minimum": 124.5296,
+    "maximum": 127.8271
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 214.2642,
+    "minimum": 194.4574,
+    "maximum": 258.4125
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 18.8262,
+    "minimum": 18.5989,
+    "maximum": 22.8668
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 153.0656,
+    "minimum": 126.7606,
+    "maximum": 184.5705
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 44.5618,
+    "minimum": 43.1223,
+    "maximum": 47.1283
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 119.2211,
+    "minimum": 102.2324,
+    "maximum": 127.2624
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.9655,
+    "minimum": 19.6851,
+    "maximum": 20.1539
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 209.5125,
+    "minimum": 191.3899,
+    "maximum": 257.8805
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 30.1137,
+    "minimum": 29.8233,
+    "maximum": 31.1516
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 197.1128,
+    "minimum": 170.6876,
+    "maximum": 241.0705
+  },
+  {
+    "run": "matched-candidate-1",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 47.5779,
+    "minimum": 47.4114,
+    "maximum": 49.1925
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 218.9934,
+    "minimum": 203.5567,
+    "maximum": 273.5629
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.3268,
+    "minimum": 19.2025,
+    "maximum": 21.9552
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 153.3117,
+    "minimum": 122.9665,
+    "maximum": 193.0425
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 45.296,
+    "minimum": 43.6229,
+    "maximum": 48.2748
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 105.2552,
+    "minimum": 92.5395,
+    "maximum": 126.8861
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.5842,
+    "minimum": 18.3309,
+    "maximum": 20.4669
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 230.2881,
+    "minimum": 209.4806,
+    "maximum": 266.7652
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 30.9456,
+    "minimum": 30.4022,
+    "maximum": 31.4287
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 207.7964,
+    "minimum": 172.5686,
+    "maximum": 237.0092
+  },
+  {
+    "run": "matched-candidate-2",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 47.1127,
+    "minimum": 45.9991,
+    "maximum": 49.4098
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 217.7455,
+    "minimum": 196.6243,
+    "maximum": 257.6482
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.5065,
+    "minimum": 19.3958,
+    "maximum": 19.76
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 153.0703,
+    "minimum": 134.6122,
+    "maximum": 192.914
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 43.8255,
+    "minimum": 42.9838,
+    "maximum": 47.4368
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 106.3133,
+    "minimum": 93.5968,
+    "maximum": 129.6704
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 18.516,
+    "minimum": 18.2949,
+    "maximum": 20.2864
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 217.3597,
+    "minimum": 196.3384,
+    "maximum": 262.2696
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 30.7355,
+    "minimum": 30.1708,
+    "maximum": 34.1712
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 209.464,
+    "minimum": 176.1981,
+    "maximum": 238.3473
+  },
+  {
+    "run": "matched-original-0",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 47.9825,
+    "minimum": 47.2406,
+    "maximum": 50.2428
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "positive",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 228.1747,
+    "minimum": 206.2174,
+    "maximum": 269.0286
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "positive",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 19.5852,
+    "minimum": 19.3231,
+    "maximum": 23.8467
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "random",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 156.6585,
+    "minimum": 126.8404,
+    "maximum": 187.8659
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "random",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 44.9075,
+    "minimum": 43.7683,
+    "maximum": 47.4612
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "real",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 112.0726,
+    "minimum": 96.9526,
+    "maximum": 128.2986
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "real",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 20.2399,
+    "minimum": 19.2344,
+    "maximum": 20.611
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 234.7297,
+    "minimum": 208.8567,
+    "maximum": 262.4713
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "sub1",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 31.3465,
+    "minimum": 30.8427,
+    "maximum": 37.8252
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "scalar",
+    "n": 9,
+    "median": 210.7357,
+    "minimum": 178.3792,
+    "maximum": 256.5953
+  },
+  {
+    "run": "matched-original-3",
+    "workload": "sub5",
+    "filter": 0,
+    "method": "stream",
+    "n": 9,
+    "median": 48.0485,
+    "minimum": 45.9971,
+    "maximum": 57.0652
+  }
+]
