@@ -9,11 +9,10 @@ use crate::{
     kmer::{Kmer, KmerBits},
     minimizer::MinimizerInfo,
     minimizers_control_map::MinimizersControlMap,
-    sparse_and_skew_index::SparseAndSkewIndex,
+    sparse_and_skew_index::{BucketSpan, SparseAndSkewIndex},
     spectrum_preserving_string_set::SpectrumPreservingStringSet,
     constants::{ceil_log2, INVALID_UINT64, MIN_L},
 };
-use value_traits::slices::SliceByValue;
 use tracing::info;
 
 /// The main dictionary structure
@@ -219,8 +218,7 @@ impl Dictionary {
         if bucket_id >= self.index.num_buckets() {
             return None;
         }
-        let (begin, end) = self.index.locate_bucket(bucket_id);
-        Some((minimizer_info.value, bucket_id as u64, (end - begin) as u64))
+        Some((minimizer_info.value, bucket_id as u64, self.index.bucket(bucket_id).len() as u64))
     }
 
     /// Look up a k-mer and return position + orientation
@@ -291,14 +289,14 @@ impl Dictionary {
                 .control_map
                 .lookup(mini.value)
                 .filter(|&id| id < self.index.num_buckets())
-                .map(|id| self.index.locate_bucket(id)),
+                .map(|id| self.index.bucket(id)),
         };
-        let Some((begin, end)) = bounds else {
+        let Some(span) = bounds else {
             let mut res = crate::streaming_query::LookupResult::not_found();
             res.minimizer_found = false;
             return res;
         };
-        let n = end - begin;
+        let n = span.len();
         if n == 0 {
             let mut res = crate::streaming_query::LookupResult::not_found();
             res.minimizer_found = false;
@@ -313,7 +311,7 @@ impl Dictionary {
             if within_pos == INVALID_UINT64 || within_pos as usize >= n {
                 return crate::streaming_query::LookupResult::not_found();
             }
-            let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
+            let minimizer_pos = self.index.bucket_offset(span, within_pos as usize);
             if !self.mmer_matches(minimizer_pos, mini.value) {
                 // A foreign k-mer probes an arbitrary in-bucket position, so a
                 // mismatch here says nothing about the minimizer's presence.
@@ -328,7 +326,7 @@ impl Dictionary {
             // same minimizer, so one presence probe decides for the whole set:
             // a mismatch means an out-of-set minimizer collided into this
             // bucket through the MPHF.
-            let first_pos = self.index.offsets.index_value(begin) as u64;
+            let first_pos = self.index.bucket_offset(span, 0);
             if !self.mmer_matches(first_pos, mini.value) {
                 if let Some(c) = cache {
                     c.size = 0;
@@ -345,7 +343,7 @@ impl Dictionary {
                 // this minimizer skips the MPHF/EF/offset work entirely.
                 c.positions[0] = first_pos;
                 for i in 1..n {
-                    c.positions[i] = self.index.offsets.index_value(begin + i) as u64;
+                    c.positions[i] = self.index.bucket_offset(span, i);
                 }
                 c.size = n;
                 let positions = c.positions;
@@ -355,8 +353,8 @@ impl Dictionary {
             if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, first_pos, mini.pos_in_kmer) {
                 return hit.into_lookup_result(self.k);
             }
-            for i in (begin + 1)..end {
-                let minimizer_pos = self.index.offsets.index_value(i) as u64;
+            for i in 1..n {
+                let minimizer_pos = self.index.bucket_offset(span, i);
                 if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, minimizer_pos, mini.pos_in_kmer) {
                     return hit.into_lookup_result(self.k);
                 }
@@ -657,7 +655,8 @@ impl Dictionary {
         let mut control_map = MinimizersControlMap::deserialize_without_mphf(&mut index_reader)?;
 
         // Read index metadata without MPHF
-        let mut index = SparseAndSkewIndex::deserialize_without_mphf(&mut index_reader)?;
+        let mut index =
+            SparseAndSkewIndex::deserialize_without_mphf(&mut index_reader, header.version_major)?;
 
         // Load MPHF container
         let mphf_path = mphf_container_path(base_path);
@@ -704,7 +703,7 @@ impl Dictionary {
     /// `None` means the minimizer is not in the index at all (the caller must
     /// report `minimizer_found = false`); `Some((begin, end))` are the bounds.
     #[inline(always)]
-    fn resolve_bucket(&self, mini_value: u64, cache: &mut BucketCache) -> Option<(usize, usize)> {
+    fn resolve_bucket(&self, mini_value: u64, cache: &mut BucketCache) -> Option<BucketSpan> {
         if cache.valid && cache.mini_value == mini_value {
             return cache.bounds;
         }
@@ -712,7 +711,7 @@ impl Dictionary {
             .control_map
             .lookup(mini_value)
             .filter(|&id| id < self.index.num_buckets())
-            .map(|id| self.index.locate_bucket(id));
+            .map(|id| self.index.bucket(id));
         cache.valid = true;
         cache.mini_value = mini_value;
         cache.bounds = bounds;
@@ -744,7 +743,7 @@ pub(crate) struct BucketCache {
     mini_value: u64,
     /// `None` records a minimizer that is absent from the index -- worth
     /// caching too, since that is the other repeated outcome.
-    bounds: Option<(usize, usize)>,
+    bounds: Option<BucketSpan>,
     /// Number of decoded positions held in `positions` (0 = nothing cached).
     /// Filled by `lookup_with_minimizer` for non-heavy buckets of at most
     /// `MAX_CACHED_POSITIONS` entries, at no extra decode cost; consumed by
@@ -824,8 +823,7 @@ mod tests {
             eprintln!("Control map lookup: bucket_id={}", bucket_id);
 
             if bucket_id < dict.index.num_buckets() {
-                let (begin, end) = dict.index.locate_bucket(bucket_id);
-                eprintln!("Bucket range: [{}, {}), size={}", begin, end, end - begin);
+                eprintln!("Bucket: {:?}", dict.index.bucket(bucket_id));
             }
         } else {
             eprintln!("Minimizer NOT found in control map!");

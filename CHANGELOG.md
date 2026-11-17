@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Index format 7.0 — direct bucket entries.** The sparse index stores one
+  entry per bucket: a singleton bucket (98% of buckets on GENCODE, k=31,
+  m=19) holds its super-k-mer offset directly, any other bucket points into a
+  separate multi-position array bounded by a small Elias-Fano. A seed no
+  longer pays a `DArray` select for its bucket bounds, and the index is ~2.4%
+  smaller (the bucket-boundary Elias-Fano is gone). Format 6.0 indexes are
+  still read and converted on load (~0.1 s); older readers reject 7.0 with
+  the usual "must be rebuilt" error. `SparseAndSkewIndex`'s `offsets` and
+  `num_super_kmers_before_bucket` fields and `locate_bucket` are replaced,
+  so this needs a minor version bump.
+
 ### Fixed
 
 - Streaming queries now advance `LookupResult::kmer_offset` on successful

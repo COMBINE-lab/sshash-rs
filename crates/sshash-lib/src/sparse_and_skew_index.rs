@@ -1,18 +1,25 @@
 //! Sparse and Skew Index for k-mer lookup
 //!
-//! This module implements the SSHash lookup index matching the C++ sshash
-//! architecture:
-//! - `num_super_kmers_before_bucket`: Elias-Fano monotone sequence for bucket
-//!   boundary routing (n = num_buckets + 1)
-//! - `offsets`: flat BitFieldVec storing one pos_in_seq per super-kmer
+//! This module implements the SSHash lookup index (format 7.0):
+//! - `bucket_entries`: one entry per bucket, in MPHF order. A singleton
+//!   bucket (98% of buckets on transcriptomes) stores its super-k-mer offset
+//!   directly; any other bucket stores `multi_base + j`, `j` being its rank
+//!   among multi-position buckets.
+//! - `multi_bounds`: Elias-Fano prefix sums of the multi-position bucket
+//!   sizes, `multi_offsets`: their positions, bucket after bucket.
 //! - `SkewIndex`: partitioned MPHFs for heavy buckets (size > MIN_BUCKET_SIZE)
 //!
 //! Lookup path:
 //!   bucket_id = mphf(minimizer)
-//!   (begin, end) = locate_bucket(bucket_id)
-//!   n = end - begin
-//!   if ceil_log2(n) > MIN_L: skew_index.lookup(kmer, ceil_log2(n)) -> within-bucket pos -> offsets[begin + pos]
-//!   else:                     linear scan offsets[begin..end]
+//!   e = bucket_entries[bucket_id]
+//!   if e < multi_base: the single position is e (no select at all)
+//!   else: (begin, end) = multi_bounds.access_pair(e - multi_base), n = end - begin
+//!     if ceil_log2(n) > MIN_L: skew_index.lookup(kmer, ceil_log2(n)) -> within-bucket pos -> multi_offsets[begin + pos]
+//!     else:                     linear scan multi_offsets[begin..end]
+//!
+//! Format 6.0 stored the flat layout (an Elias-Fano of bucket boundaries over
+//! one offsets array, so every lookup paid a `DArray` select); it is still
+//! read, and converted on load.
 
 use crate::builder::buckets::{Bucket, ClassifiedBuckets, MIN_BUCKET_SIZE};
 use crate::builder::dictionary_builder::BucketMetadata;
@@ -34,39 +41,126 @@ use value_traits::slices::{SliceByValue, SliceByValueMut};
 /// 2. Using locate_bucket(bucket_id) to find the range [begin, end) in offsets
 /// 3. Size-based routing: linear scan for small buckets, MPHF for heavy buckets
 pub struct SparseAndSkewIndex {
-    /// Monotone Elias-Fano sequence: `extras[i]` = cumulative (bucket_size - 1)
-    /// for buckets 0..i. Used to locate bucket boundaries:
-    ///   begin = ef.access(id) + id
-    ///   end   = ef.access(id+1) + id + 1
-    pub num_super_kmers_before_bucket: EliasFanoOffsets,
+    /// One entry per bucket, in MPHF order: the offset (pos_in_seq) of a
+    /// singleton bucket's super-k-mer, or `multi_base + j` for the `j`-th
+    /// multi-position bucket.
+    bucket_entries: BitFieldVec,
 
-    /// One entry per super-kmer: absolute offset (pos_in_seq) into SPSS.
-    /// Entries are ordered by bucket (in MPHF order), then by position within
-    /// each bucket.
-    pub offsets: BitFieldVec,
+    /// One past the largest super-k-mer offset: entries below it are offsets.
+    multi_base: u64,
+
+    /// Elias-Fano prefix sums of the multi-position bucket sizes
+    /// (`num_multi + 1` values starting at 0).
+    multi_bounds: EliasFanoOffsets,
+
+    /// Super-k-mer offsets of the multi-position buckets, bucket after bucket
+    /// (in MPHF order), then by position within each bucket.
+    multi_offsets: BitFieldVec,
 
     /// Skew index for heavy buckets (size > MIN_BUCKET_SIZE)
     pub skew_index: SkewIndex,
 }
 
+/// Where a bucket's super-k-mer offsets are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BucketSpan {
+    /// A singleton bucket, with its only offset.
+    Single(u64),
+    /// `multi_offsets[begin..end]`.
+    Multi(usize, usize),
+}
+
+impl BucketSpan {
+    /// Number of super-k-mers in the bucket.
+    #[inline(always)]
+    pub(crate) fn len(self) -> usize {
+        match self {
+            BucketSpan::Single(_) => 1,
+            BucketSpan::Multi(b, e) => e - b,
+        }
+    }
+}
+
 impl SparseAndSkewIndex {
     /// Create a new empty index
     pub fn new() -> Self {
-        Self {
-            num_super_kmers_before_bucket: EliasFanoOffsets::from_vec(&[0]),
-            offsets: BitFieldVec::new(1, 0),
-            skew_index: SkewIndex::new(),
+        Self::from_flat(EliasFanoOffsets::from_vec(&[0]), BitFieldVec::new(1, 0), SkewIndex::new())
+    }
+
+    /// Locate a bucket's super-k-mer offsets.
+    #[inline(always)]
+    pub(crate) fn bucket(&self, bucket_id: usize) -> BucketSpan {
+        let e = self.bucket_entries.index_value(bucket_id) as u64;
+        if e < self.multi_base {
+            BucketSpan::Single(e)
+        } else {
+            let (b, e) = self.multi_bounds.access_pair((e - self.multi_base) as usize);
+            BucketSpan::Multi(b as usize, e as usize)
         }
     }
 
-    /// Locate a bucket's range in the offsets array.
-    ///
-    /// Returns `(begin, end)` such that `offsets[begin..end]` contains
-    /// all super-kmer positions for the given bucket.
-    #[inline]
-    pub fn locate_bucket(&self, bucket_id: usize) -> (usize, usize) {
-        let (b, e) = self.num_super_kmers_before_bucket.access_pair(bucket_id);
-        (b as usize + bucket_id, e as usize + bucket_id + 1)
+    /// The `i`-th super-k-mer offset of a bucket (`i < span.len()`).
+    #[inline(always)]
+    pub(crate) fn bucket_offset(&self, span: BucketSpan, i: usize) -> u64 {
+        match span {
+            BucketSpan::Single(pos) => {
+                debug_assert_eq!(i, 0);
+                pos
+            }
+            BucketSpan::Multi(b, _) => self.multi_offsets.index_value(b + i) as u64,
+        }
+    }
+
+    /// Convert the flat (format 6.0) layout: `extras` is the Elias-Fano of
+    /// `sum over buckets j < i of (size_j - 1)` and `offsets` the super-k-mer
+    /// offsets of all buckets in MPHF order. Both are dropped once converted.
+    fn from_flat(extras: EliasFanoOffsets, offsets: BitFieldVec, skew_index: SkewIndex) -> Self {
+        let t0 = std::time::Instant::now();
+        let num_buckets = extras.len().saturating_sub(1);
+        // Bucket i spans offsets[extras[i] + i .. extras[i + 1] + i + 1].
+        let sizes = || {
+            let mut it = extras.iter();
+            let mut prev = it.next().unwrap_or(0);
+            it.map(move |x| {
+                let size = (x - prev) as usize + 1;
+                prev = x;
+                size
+            })
+        };
+        let mut num_multi = 0usize;
+        let mut multi_bounds_vec = vec![0u64];
+        for size in sizes() {
+            if size != 1 {
+                num_multi += 1;
+                multi_bounds_vec.push(multi_bounds_vec.last().unwrap() + size as u64);
+            }
+        }
+        let multi_base = offsets.iter().max().map_or(0, |m| m as u64 + 1);
+        let max_entry = if num_multi > 0 { multi_base + num_multi as u64 - 1 } else { multi_base };
+        let entry_width = (64 - max_entry.leading_zeros() as usize).max(1);
+        let mut bucket_entries = BitFieldVec::new(entry_width, num_buckets);
+        let mut multi_offsets =
+            BitFieldVec::new(offsets.bit_width(), *multi_bounds_vec.last().unwrap() as usize);
+        let mut values = offsets.iter();
+        let (mut j, mut dst) = (0u64, 0usize);
+        for (id, size) in sizes().enumerate() {
+            if size == 1 {
+                bucket_entries.set_value(id, values.next().expect("offsets shorter than buckets"));
+            } else {
+                bucket_entries.set_value(id, (multi_base + j) as usize);
+                j += 1;
+                for v in values.by_ref().take(size) {
+                    multi_offsets.set_value(dst, v);
+                    dst += 1;
+                }
+            }
+        }
+        assert!(values.next().is_none() && dst == multi_offsets.len(), "bucket sizes do not cover the offsets");
+        drop(values);
+        drop(offsets);
+        let multi_bounds = EliasFanoOffsets::from_vec(&multi_bounds_vec);
+        info!("  Direct bucket layout: {:.2}s — {} multi-position buckets", t0.elapsed().as_secs_f64(), num_multi);
+        Self { bucket_entries, multi_base, multi_bounds, multi_offsets, skew_index }
     }
 
     /// Build the sparse and skew index from owned `Bucket` objects (legacy API).
@@ -131,7 +225,7 @@ impl SparseAndSkewIndex {
         let skew_index = SkewIndex::build::<K>(&heavy_refs, max_bucket_size, spss);
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
-        Self { num_super_kmers_before_bucket, offsets, skew_index }
+        Self::from_flat(num_super_kmers_before_bucket, offsets, skew_index)
     }
 
     /// Build the sparse and skew index from in-place classified buckets.
@@ -225,11 +319,7 @@ impl SparseAndSkewIndex {
         );
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
-        Self {
-            num_super_kmers_before_bucket,
-            offsets,
-            skew_index,
-        }
+        Self::from_flat(num_super_kmers_before_bucket, offsets, skew_index)
     }
 
     /// Build the sparse and skew index from file tuples (streaming path).
@@ -363,29 +453,28 @@ impl SparseAndSkewIndex {
         let skew_index = SkewIndex::build_inner::<K>(tuples_iter, max_bucket_size, spss);
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
-        Ok(Self {
-            num_super_kmers_before_bucket,
-            offsets,
-            skew_index,
-        })
+        Ok(Self::from_flat(num_super_kmers_before_bucket, offsets, skew_index))
     }
 
     /// Get memory usage in bits
     pub fn num_bits(&self) -> u64 {
-        let ef_bits = self.num_super_kmers_before_bucket.num_bits();
-        let offsets_bits = (self.offsets.len() * self.offsets.bit_width()) as u64;
+        let ef_bits = self.multi_bounds.num_bits();
+        let offsets_bits = (self.bucket_entries.len() * self.bucket_entries.bit_width()
+            + self.multi_offsets.len() * self.multi_offsets.bit_width()) as u64;
         let skew_bits = self.skew_index.num_bits();
         ef_bits + offsets_bits + skew_bits
     }
 
-    /// Byte size of EF sequence
+    /// Byte size of the multi-position bucket bounds (Elias-Fano)
     pub fn ef_bytes(&self) -> usize {
-        self.num_super_kmers_before_bucket.num_bytes() as usize
+        self.multi_bounds.num_bytes() as usize
     }
 
-    /// Byte size of offsets (BitFieldVec backing data)
+    /// Byte size of the bucket entries and multi-position offsets
+    /// (BitFieldVec backing data)
     pub fn offsets_bytes(&self) -> usize {
-        std::mem::size_of_val(self.offsets.as_slice())
+        std::mem::size_of_val(self.bucket_entries.as_slice())
+            + std::mem::size_of_val(self.multi_offsets.as_slice())
     }
 
     /// Byte size of skew index data (positions only, excluding MPHFs)
@@ -400,13 +489,12 @@ impl SparseAndSkewIndex {
 
     /// Number of buckets stored
     pub fn num_buckets(&self) -> usize {
-        // EF has num_buckets + 1 entries
-        self.num_super_kmers_before_bucket.len().saturating_sub(1)
+        self.bucket_entries.len()
     }
 
     /// Total number of super-kmers (offsets entries)
     pub fn num_offsets(&self) -> usize {
-        self.offsets.len()
+        self.bucket_entries.len() - self.multi_bounds.len().saturating_sub(1) + self.multi_offsets.len()
     }
 }
 
@@ -418,14 +506,12 @@ impl SparseAndSkewIndex {
     ) -> std::io::Result<()> {
         use epserde::ser::Serialize;
 
-        // Serialize EF sequence
-        self.num_super_kmers_before_bucket.write_to(writer)?;
-
-        // Serialize offsets
+        writer.write_all(&self.multi_base.to_le_bytes())?;
         // SAFETY: BitFieldVec serialization preserves data layout
-        unsafe { self.offsets
-            .serialize(writer)
-            .map_err(std::io::Error::other)? };
+        unsafe { self.bucket_entries.serialize(writer).map_err(std::io::Error::other)? };
+        self.multi_bounds.write_to(writer)?;
+        // SAFETY: as above
+        unsafe { self.multi_offsets.serialize(writer).map_err(std::io::Error::other)? };
 
         // Serialize skew index (excluding MPHF)
         self.skew_index.serialize_without_mphf(writer)?;
@@ -433,28 +519,35 @@ impl SparseAndSkewIndex {
         Ok(())
     }
 
-    /// Deserialize without MPHF (MPHFs loaded separately from container)
+    /// Deserialize without MPHF (MPHFs loaded separately from container).
+    /// `format_major` is the index header's: 6 is the flat layout, converted.
     pub fn deserialize_without_mphf<R: std::io::Read>(
         reader: &mut R,
+        format_major: u32,
     ) -> std::io::Result<Self> {
         use epserde::deser::Deserialize;
 
-        // Deserialize EF sequence
-        let num_super_kmers_before_bucket = EliasFanoOffsets::read_from(reader)?;
+        if format_major == 6 {
+            let extras = EliasFanoOffsets::read_from(reader)?;
+            // SAFETY: Reading data serialized by our own serialize method
+            let offsets = unsafe { BitFieldVec::deserialize_full(reader) }
+                .map_err(std::io::Error::other)?;
+            let skew_index = SkewIndex::deserialize_without_mphf(reader)?;
+            return Ok(Self::from_flat(extras, offsets, skew_index));
+        }
 
-        // Deserialize offsets
+        let mut buf8 = [0u8; 8];
+        reader.read_exact(&mut buf8)?;
+        let multi_base = u64::from_le_bytes(buf8);
         // SAFETY: Reading data serialized by our own serialize method
-        let offsets = unsafe { BitFieldVec::deserialize_full(reader) }
+        let bucket_entries = unsafe { BitFieldVec::deserialize_full(reader) }
             .map_err(std::io::Error::other)?;
-
-        // Deserialize skew index (excluding MPHF)
+        let multi_bounds = EliasFanoOffsets::read_from(reader)?;
+        // SAFETY: as above
+        let multi_offsets = unsafe { BitFieldVec::deserialize_full(reader) }
+            .map_err(std::io::Error::other)?;
         let skew_index = SkewIndex::deserialize_without_mphf(reader)?;
-
-        Ok(Self {
-            num_super_kmers_before_bucket,
-            offsets,
-            skew_index,
-        })
+        Ok(Self { bucket_entries, multi_base, multi_bounds, multi_offsets, skew_index })
     }
 }
 
@@ -834,12 +927,8 @@ mod tests {
         // Should have 1 bucket
         assert_eq!(index.num_buckets(), 1);
 
-        // locate_bucket should give (0, 1) for singleton
-        let (begin, end) = index.locate_bucket(0);
-        assert_eq!((begin, end), (0, 1));
-
-        // offsets[0] should be 50 (the pos_in_seq)
-        assert_eq!(index.offsets.index_value(0), 50);
+        // A singleton bucket stores its pos_in_seq directly
+        assert_eq!(index.bucket(0), BucketSpan::Single(50));
     }
 
     #[test]
@@ -865,14 +954,14 @@ mod tests {
         assert_eq!(index.num_buckets(), 1);
         assert_eq!(index.num_offsets(), 3);
 
-        // locate_bucket should give (0, 3) for size-3 bucket
-        let (begin, end) = index.locate_bucket(0);
-        assert_eq!((begin, end), (0, 3));
+        // A size-3 bucket spans multi_offsets[0..3]
+        let span = index.bucket(0);
+        assert_eq!(span, BucketSpan::Multi(0, 3));
 
         // Check positions
-        assert_eq!(index.offsets.index_value(0), 100);
-        assert_eq!(index.offsets.index_value(1), 101);
-        assert_eq!(index.offsets.index_value(2), 102);
+        assert_eq!(index.bucket_offset(span, 0), 100);
+        assert_eq!(index.bucket_offset(span, 1), 101);
+        assert_eq!(index.bucket_offset(span, 2), 102);
     }
 
     #[test]
@@ -900,19 +989,56 @@ mod tests {
         assert_eq!(index.num_offsets(), 4); // 1 + 2 + 1
 
         // Bucket 0: singleton at offset 50
-        let (b0, e0) = index.locate_bucket(0);
-        assert_eq!((b0, e0), (0, 1));
-        assert_eq!(index.offsets.index_value(0), 50);
+        assert_eq!(index.bucket(0), BucketSpan::Single(50));
 
         // Bucket 1: light with 2 offsets
-        let (b1, e1) = index.locate_bucket(1);
-        assert_eq!((b1, e1), (1, 3));
-        assert_eq!(index.offsets.index_value(1), 100);
-        assert_eq!(index.offsets.index_value(2), 101);
+        let span = index.bucket(1);
+        assert_eq!(span, BucketSpan::Multi(0, 2));
+        assert_eq!(index.bucket_offset(span, 0), 100);
+        assert_eq!(index.bucket_offset(span, 1), 101);
 
         // Bucket 2: singleton at offset 200
-        let (b2, e2) = index.locate_bucket(2);
-        assert_eq!((b2, e2), (3, 4));
-        assert_eq!(index.offsets.index_value(3), 200);
+        assert_eq!(index.bucket(2), BucketSpan::Single(200));
+    }
+
+    /// A format 6.0 index (flat layout) must load into the same buckets as a
+    /// fresh build: the flat parts are written by hand as 6.0 did.
+    #[test]
+    fn test_reads_format_6_flat_layout() {
+        use epserde::ser::Serialize;
+        let sizes = [1usize, 2, 1, 3, 1, 1, 2];
+        let mut extras = vec![0u64];
+        let mut offsets_vec = Vec::new();
+        for (b, &size) in sizes.iter().enumerate() {
+            extras.push(extras.last().unwrap() + size as u64 - 1);
+            offsets_vec.extend((0..size).map(|i| 1000 * b + 7 * i));
+        }
+        let mut offsets = BitFieldVec::new(13, offsets_vec.len());
+        for (i, &v) in offsets_vec.iter().enumerate() {
+            offsets.set_value(i, v);
+        }
+        let mut bytes = Vec::new();
+        EliasFanoOffsets::from_vec(&extras).write_to(&mut bytes).unwrap();
+        unsafe { offsets.serialize(&mut bytes).unwrap() };
+        SkewIndex::new().serialize_without_mphf(&mut bytes).unwrap();
+
+        let index = SparseAndSkewIndex::deserialize_without_mphf(&mut bytes.as_slice(), 6).unwrap();
+        assert_eq!(index.num_buckets(), sizes.len());
+        assert_eq!(index.num_offsets(), offsets_vec.len());
+        for (b, &size) in sizes.iter().enumerate() {
+            let span = index.bucket(b);
+            assert_eq!(span.len(), size);
+            for i in 0..size {
+                assert_eq!(index.bucket_offset(span, i), (1000 * b + 7 * i) as u64);
+            }
+        }
+
+        // ... and survive a 7.0 round trip unchanged.
+        let mut bytes7 = Vec::new();
+        index.serialize_without_mphf(&mut bytes7).unwrap();
+        let index7 = SparseAndSkewIndex::deserialize_without_mphf(&mut bytes7.as_slice(), 7).unwrap();
+        for b in 0..sizes.len() {
+            assert_eq!(index7.bucket(b), index.bucket(b));
+        }
     }
 }
