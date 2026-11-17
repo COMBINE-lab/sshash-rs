@@ -375,6 +375,68 @@ impl MinimizerIterator {
         info
     }
 
+    /// The minimizer of the k-mer `steps` positions after the last one this
+    /// iterator saw (`steps == 1` is [`Self::next`]); `kmer` is that k-mer.
+    ///
+    /// Lets a caller skip the minimizer while it does not need it (a
+    /// streaming query extending along a unitig) and catch up on demand. The
+    /// skipped windows' newest loci all lie in `kmer` when `steps <= k - m`,
+    /// so they are replayed from it, one hash each, exactly as `next` would
+    /// have; once the minimum would leave the window, or the gap is longer,
+    /// a re-scan of `kmer` gives the same state (leftmost minimum of the
+    /// window and its tie count) in at most `k - m + 1` hashes.
+    #[inline]
+    pub fn advance<const K: usize>(&mut self, steps: u64, kmer: &Kmer<K>, kmer_rc: &Kmer<K>) -> MinimizerInfo
+    where
+        Kmer<K>: KmerBits,
+    {
+        debug_assert!(steps >= 1);
+        if steps == 1 {
+            return self.next(kmer, kmer_rc);
+        }
+        let ws = self.window_size as u64;
+        // Start of the k-mer `kmer` (the last k-mer seen started at
+        // `self.position - ws`).
+        let target = self.position - ws + steps;
+        if steps > ws || self.min_pos_in_kmer as u64 <= steps - 1 {
+            // The minimum leaves the window before `kmer` (or right at it):
+            // nothing to replay, re-scan `kmer` itself.
+            self.position = target;
+            self.rescan(kmer, kmer_rc);
+        } else {
+            for locus in (self.window_size + 1 - steps as usize)..=self.window_size {
+                self.position += 1;
+                let value = canonical_mmer_at(kmer, kmer_rc, self.m, locus);
+                let hash = self.hasher.hash(value);
+                if hash < self.min_hash {
+                    self.min_hash = hash;
+                    self.min_value = value;
+                    self.min_position = self.position;
+                    self.num_mins = 1;
+                } else if hash == self.min_hash {
+                    self.num_mins += 1;
+                }
+            }
+            // Positions are absolute; re-derive the locus within `kmer`.
+            self.min_pos_in_kmer = (self.min_position - target) as usize;
+        }
+        debug_assert_eq!(self.position, target + ws);
+
+        let mut info = MinimizerInfo::new(self.min_value, self.min_position, self.min_pos_in_kmer);
+        if self.num_mins > 1 {
+            self.break_tie(kmer, kmer_rc, &mut info);
+        }
+        debug_assert_eq!(
+            (info.value, info.pos_in_kmer),
+            {
+                let reference = compute_minimizer(kmer, kmer_rc, self.m, &self.hasher);
+                (reference.value, reference.pos_in_kmer)
+            },
+            "lazy minimizer disagrees with the batch reference"
+        );
+        info
+    }
+
     /// Rescan the window to find the minimum over all loci.
     fn rescan<const K: usize>(&mut self, kmer: &Kmer<K>, kmer_rc: &Kmer<K>)
     where
@@ -545,6 +607,51 @@ mod tests {
             // matches window anchoring.
             assert_eq!(seq_mini.position, kmer_pos as u64 + seq_mini.pos_in_kmer as u64);
         }
+    }
+
+    /// `advance(steps)` after skipping k-mers must return exactly what
+    /// feeding every k-mer to `next` returns, for all gap lengths (replayed
+    /// and re-scanned) and on low-complexity stretches where ties occur.
+    #[test]
+    fn test_advance_matches_sequential_next() {
+        fn check<const K: usize>(m: usize)
+        where
+            Kmer<K>: KmerBits,
+        {
+            let mut s: u64 = 0xD1B5_4A32_D192_ED03 ^ m as u64;
+            let mut rnd = || {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                s
+            };
+            let mut seq = Vec::new();
+            while seq.len() < 6000 {
+                match rnd() % 4 {
+                    0 => seq.extend(std::iter::repeat_n(b"ACGT"[(rnd() % 4) as usize], 40)),
+                    1 => seq.extend(b"ACACACACACACACACACACACACACACACACACAC"),
+                    _ => seq.extend((0..200).map(|_| b"ACGT"[(rnd() % 4) as usize])),
+                }
+            }
+            let mut seq_it = MinimizerIterator::with_seed(K, m, 7);
+            let mut lazy_it = MinimizerIterator::with_seed(K, m, 7);
+            let (mut lag, mut gap) = (0u64, 1u64);
+            for pos in 0..=seq.len() - K {
+                let kmer = Kmer::<K>::from_ascii_unchecked(&seq[pos..pos + K]);
+                let rc = kmer.reverse_complement();
+                let expected = seq_it.next(&kmer, &rc);
+                lag += 1;
+                if lag == gap {
+                    assert_eq!(lazy_it.advance(lag, &kmer, &rc), expected, "k={K} m={m} pos={pos} gap={gap}");
+                    lag = 0;
+                    gap = 1 + rnd() % (2 * (K - m) as u64 + 4);
+                }
+            }
+        }
+        check::<31>(19);
+        check::<31>(16);
+        check::<21>(11);
+        check::<63>(31);
     }
 
     #[test]
