@@ -382,9 +382,14 @@ impl MinimizerIterator {
     /// streaming query extending along a unitig) and catch up on demand. The
     /// skipped windows' newest loci all lie in `kmer` when `steps <= k - m`,
     /// so they are replayed from it, one hash each, exactly as `next` would
-    /// have; once the minimum would leave the window, or the gap is longer,
-    /// a re-scan of `kmer` gives the same state (leftmost minimum of the
-    /// window and its tie count) in at most `k - m + 1` hashes.
+    /// have. If the stored minimum would leave the final window, or the gap
+    /// is longer, a re-scan of `kmer` reconstructs the leftmost minimum and
+    /// its tie count using `k - m + 1` hashes, excluding tie-resolution work.
+    /// This need not use fewer hashes than eager updates: an intermediate
+    /// update could replace the old minimum before it expires.
+    ///
+    /// `steps` must be positive. After construction or reset, the first
+    /// call must use `steps == 1` to initialize the iterator's window.
     #[inline]
     pub fn advance<const K: usize>(&mut self, steps: u64, kmer: &Kmer<K>, kmer_rc: &Kmer<K>) -> MinimizerInfo
     where
@@ -399,8 +404,8 @@ impl MinimizerIterator {
         // `self.position - ws`).
         let target = self.position - ws + steps;
         if steps > ws || (self.min_pos_in_kmer as u64) < steps {
-            // The minimum leaves the window before `kmer` (or right at it):
-            // nothing to replay, re-scan `kmer` itself.
+            // The stored minimum is outside the final window, so reconstruct
+            // its state without processing the intermediate windows.
             self.position = target;
             self.rescan(kmer, kmer_rc);
         } else {
@@ -650,8 +655,49 @@ mod tests {
         }
         check::<31>(19);
         check::<31>(16);
+        check::<31>(31); // A single minimizer locus.
+        check::<31>(30); // Two loci, including self-RC m-mers.
         check::<21>(11);
         check::<63>(31);
+        check::<63>(1); // Frequent ties across a wide minimizer window.
+        check::<63>(2);
+    }
+
+    /// The old minimum may expire across a gap even though an intermediate
+    /// eager update would have replaced it. Lazy catch-up must remain correct;
+    /// its full rescan is not guaranteed to use fewer hashes than eager next.
+    #[test]
+    fn test_advance_after_intermediate_minimum_replacement() {
+        let mut state = 0x59A4_0271_B6D3_8EF5u64;
+        for _ in 0..10_000 {
+            let seq: Vec<u8> = (0..33).map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                b"ACGT"[(state & 3) as usize]
+            }).collect();
+            let windows: Vec<_> = seq.windows(31)
+                .map(Kmer::<31>::from_ascii_unchecked).collect();
+            let mut eager = MinimizerIterator::with_seed(31, 19, 1);
+            let mut lazy = MinimizerIterator::with_seed(31, 19, 1);
+            let rc0 = windows[0].reverse_complement();
+            eager.next(&windows[0], &rc0);
+            lazy.next(&windows[0], &rc0);
+            if eager.min_pos_in_kmer != 1 { continue; }
+            let old_hash = eager.min_hash;
+            eager.next(&windows[1], &windows[1].reverse_complement());
+            if eager.min_hash >= old_hash { continue; }
+            // Both eager steps use the one-new-locus path. The original lazy
+            // policy instead rescans all 13 loci because its old winner left.
+            let rc2 = windows[2].reverse_complement();
+            let expected = eager.next(&windows[2], &rc2);
+            assert_eq!(lazy.advance(2, &windows[2], &rc2), expected);
+            assert_eq!(lazy.min_hash, eager.min_hash);
+            assert_eq!(lazy.min_position, eager.min_position);
+            assert_eq!(lazy.num_mins, eager.num_mins);
+            return;
+        }
+        panic!("deterministic search did not exercise intermediate replacement");
     }
 
     #[test]
