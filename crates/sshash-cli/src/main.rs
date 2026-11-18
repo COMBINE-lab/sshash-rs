@@ -107,6 +107,18 @@ enum Commands {
         streaming: bool,
     },
 
+    /// Convert an index to the inline-first bucket layout when that is
+    /// smaller (a format 6.0 index loads flat), and save it
+    Upgrade {
+        /// Index file
+        #[arg(short, long)]
+        index: String,
+
+        /// Output index file
+        #[arg(short, long)]
+        output: String,
+    },
+
     /// Run performance benchmarks
     Bench {
         /// Index file
@@ -193,6 +205,12 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Check { index, input, streaming } => {
             check_command(index, input, streaming)?;
+        }
+        Commands::Upgrade { index, output } => {
+            let mut dict = Dictionary::load(normalize_index_path(&index))?;
+            let changed = dict.upgrade_layout();
+            info!("Layout {}", if changed { "converted to inline-first" } else { "kept" });
+            dict.save(&output)?;
         }
         Commands::Bench { index } => {
             bench_command(index)?;

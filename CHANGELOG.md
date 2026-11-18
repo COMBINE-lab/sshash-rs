@@ -4,17 +4,39 @@
 
 ### Changed
 
-- **Index format 7.0 — direct bucket entries.** The sparse index stores one
-  entry per bucket: a singleton bucket (98% of buckets on GENCODE, k=31,
-  m=19) holds its super-k-mer offset directly, any other bucket points into a
-  separate multi-position array bounded by a small Elias-Fano. A seed no
-  longer pays a `DArray` select for its bucket bounds, and the index is ~2.4%
-  smaller (the bucket-boundary Elias-Fano is gone). Format 6.0 indexes are
-  still read and converted on load (~0.1 s); older readers reject 7.0 with
-  the usual "must be rebuilt" error. `SparseAndSkewIndex`'s `offsets` and
-  `num_super_kmers_before_bucket` fields and `locate_bucket` are replaced by
-  `bucket(id) -> BucketSpan` and `bucket_offset(span, i)`, so this needs a
-  minor version bump.
+- **Index format 7.0 — inline-first bucket layout.** The sparse index
+  starts with a layout tag. The new inline-first layout stores each bucket's
+  first super-k-mer offset directly; a bitmap with sampled ranks marks the
+  multi-position buckets, whose other offsets sit in a separate array bounded
+  by a small Elias-Fano, and one flag per 64 buckets marks blocks holding a
+  heavy bucket. A lookup tries the first offset before decoding anything
+  else, so singletons and first-position hits pay no Elias-Fano select. The
+  builder compares the complete storage of both layouts and keeps the flat
+  (6.0) one when it is smaller, e.g. when most buckets hold two positions.
+  The classified (in-memory) build writes the chosen layout directly; the
+  legacy and external builds lay out flat, then convert.
+  Measured on one Apple M4 Max (Rust 1.100) with a GENCODE v50 salmon
+  index (k=31, m=19), as medians of paired ratios vs main with observed
+  ranges, not confidence intervals: sshash-cli over 2M GEUVADIS reads
+  (8 rotated rounds), point queries −13.2% [−18.1, +1.5], streaming −5.1%
+  [−24.1, −1.8]; piscem-rs `map-bulk` on 2M read pairs, 4 threads, gzip
+  input (5 rounds), permissive −7.3% [−15.8, −4.0], strict −4.5% [−7.1,
+  −2.8], with byte-identical single-threaded RAD output. The sparse index
+  is 1.43 MB smaller. A full piscem-rs index build (4 threads, 5 rounds)
+  takes 4.0 s with either version, and its `.ssi` is byte-identical to an
+  explicit upgrade of the 6.0 build. Other references, m values, x86 and
+  the external build were not measured.
+- **Format 6.0 indexes load as stored.** They keep the flat layout (no
+  conversion: 20 ms and 209 MiB to load GENCODE v50, as before, instead
+  of 230 ms and 339 MiB for an implicit conversion); queries on them run
+  about 2% slower than before this change (layout dispatch), mapping within
+  ±1%.
+  `Dictionary::upgrade_layout` (CLI: `sshash upgrade -i old.ssi -o
+  new.ssi`) converts them once. Older readers reject 7.0 with the usual
+  "must be rebuilt" error. `SparseAndSkewIndex`'s
+  `offsets` and `num_super_kmers_before_bucket` fields and `locate_bucket`
+  are replaced by `bucket(id) -> BucketSpan` and `bucket_offset(span, i)`,
+  so this needs a minor version bump.
 
 ### Fixed
 

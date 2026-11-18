@@ -66,11 +66,12 @@ const MPHF_MAGIC: &[u8; 8] = b"SSHIMH02";
 ///   the canonical flag is always 1.
 /// - (6, 0): bucket order follows a sux PHastR MPHF (sux 0.15), so the
 ///   `.ssi` is only valid with an MPHF container of version 3.
-/// - (7, 0): direct bucket entries (a singleton bucket stores its offset,
-///   others index a separate multi-position array) instead of an Elias-Fano
-///   of bucket boundaries over one flat offsets array. 6.0 is still read.
+/// - (7, 0): the sparse index starts with a layout tag: flat (the 6.0 layout)
+///   or inline-first (each bucket's first offset stored directly, the rest
+///   of multi-position buckets in a separate array). 6.0 is still read, and
+///   stays flat until `Dictionary::upgrade_layout`.
 const FORMAT_VERSION: (u32, u32) = (7, 0);
-/// Oldest major version this build still reads (converted on load).
+/// Oldest major version this build still reads (as stored, not converted).
 const OLDEST_READABLE_MAJOR: u32 = 6;
 /// MPHF container version.
 ///
