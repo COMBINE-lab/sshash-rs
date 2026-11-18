@@ -20,6 +20,9 @@ pub struct SpectrumPreservingStringSet {
     /// Offsets into the strings vector (in terms of bases, not bytes),
     /// encoded using Elias-Fano for ~2 bits/element vs 64 bits/element.
     offsets: EliasFanoOffsets,
+    /// Load-time acceleration of `locate_with_end` (not serialized); `None`
+    /// when the text exceeds `u32` positions, falling back to the EF scan.
+    locator: Option<StringLocator>,
     /// K-mer size of the strings
     k: usize,
     /// M (minimizer) size
@@ -29,12 +32,7 @@ pub struct SpectrumPreservingStringSet {
 impl SpectrumPreservingStringSet {
     /// Create a new empty SPSS
     pub fn new(k: usize, m: usize) -> Self {
-        Self {
-            strings: Vec::new(),
-            offsets: EliasFanoOffsets::from_vec(&[0]),
-            k,
-            m,
-        }
+        Self::with_locator(Vec::new(), EliasFanoOffsets::from_vec(&[0]), k, m)
     }
     
     /// Create a new SPSS from existing strings and offsets
@@ -50,12 +48,12 @@ impl SpectrumPreservingStringSet {
         // Pad strings with 8 zero bytes to allow safe unaligned u64 reads
         // near the end without out-of-bounds access.
         strings.resize(strings.len() + 8, 0);
-        Self {
-            strings,
-            offsets: EliasFanoOffsets::from_offsets_vector(offsets),
-            k,
-            m,
-        }
+        Self::with_locator(strings, EliasFanoOffsets::from_offsets_vector(offsets), k, m)
+    }
+
+    fn with_locator(strings: Vec<u8>, offsets: EliasFanoOffsets, k: usize, m: usize) -> Self {
+        let locator = StringLocator::build(&offsets);
+        Self { strings, offsets, locator, k, m }
     }
 
     /// Get the string offsets (begin, end) for a string ID
@@ -117,7 +115,10 @@ impl SpectrumPreservingStringSet {
     /// This is more efficient than calling `locate()` + `string_offsets()`.
     #[inline]
     pub fn locate_with_end(&self, absolute_pos: u64) -> Option<(u64, u64, u64)> {
-        self.offsets.locate_with_end(absolute_pos)
+        match &self.locator {
+            Some(l) => l.locate_with_end(absolute_pos),
+            None => self.offsets.locate_with_end(absolute_pos),
+        }
     }
 
     /// Get memory usage in bits (excludes padding bytes)
@@ -353,7 +354,72 @@ impl SpectrumPreservingStringSet {
         let mut strings = vec![0u8; strings_len + 8]; // +8 padding for safe unaligned reads
         reader.read_exact(&mut strings[..strings_len])?;
         let offsets = EliasFanoOffsets::read_from(reader)?;
-        Ok(Self { strings, offsets, k, m })
+        Ok(Self::with_locator(strings, offsets, k, m))
+    }
+}
+
+/// Direct-addressed string locator, rebuilt from the Elias-Fano offsets at
+/// construction and load time.
+///
+/// `locate_with_end` on the EF costs a `DArray` select0, a bit scan and
+/// low-bit extraction: three dependent memory levels per k-mer seed. Here a
+/// block table maps `pos >> shift` to the string holding the block's first
+/// base. A forward scan of `begins` finds the first boundary after the query,
+/// without reading the next block entry. The scan is linear in the number of
+/// intervening boundaries; it does not have a logarithmic worst-case bound.
+/// `shift` makes the block width the largest power of two not exceeding the
+/// average string length (at least one base).
+///
+/// Adds `4 * (num_strings + 1) + 4 * ceil(total_bases / block_width)` bytes
+/// alongside the retained Elias-Fano offsets, generally about 8-12 bytes per
+/// string. The table is not serialized and must be rebuilt on every load.
+struct StringLocator {
+    shift: u32,
+    /// All string boundaries, `begins[num_strings] == total_bases`.
+    begins: Vec<u32>,
+    /// `blocks[b]` = largest string id whose begin is `<= b << shift`.
+    blocks: Vec<u32>,
+}
+
+impl StringLocator {
+    fn build(offsets: &EliasFanoOffsets) -> Option<Self> {
+        let n = offsets.len();
+        if n < 2 {
+            return None;
+        }
+        let total = offsets.access(n - 1);
+        if total > u32::MAX as u64 || offsets.access(0) != 0 {
+            return None;
+        }
+        let begins: Vec<u32> = (0..n).map(|i| offsets.access(i) as u32).collect();
+        let num_strings = (n - 1) as u64;
+        let avg = (total / num_strings).max(1);
+        let shift = 63 - avg.leading_zeros();
+        let num_blocks = total.div_ceil(1u64 << shift) as usize;
+        let mut blocks = Vec::with_capacity(num_blocks);
+        let mut id = 0usize;
+        for b in 0..num_blocks {
+            let start = (b as u64) << shift;
+            while id + 1 < n - 1 && begins[id + 1] as u64 <= start {
+                id += 1;
+            }
+            blocks.push(id as u32);
+        }
+        Some(Self { shift, begins, blocks })
+    }
+
+    /// Same contract as [`EliasFanoOffsets::locate_with_end`].
+    #[inline(always)]
+    fn locate_with_end(&self, pos: u64) -> Option<(u64, u64, u64)> {
+        let b = (pos >> self.shift) as usize;
+        let mut id = *self.blocks.get(b)? as usize;
+        let mut end = self.begins[id + 1] as u64;
+        while end <= pos {
+            id += 1;
+            // Crossing the final sentinel means the query is out of bounds.
+            end = *self.begins.get(id + 1)? as u64;
+        }
+        Some((id as u64, self.begins[id] as u64, end))
     }
 }
 
@@ -373,6 +439,61 @@ impl std::fmt::Debug for SpectrumPreservingStringSet {
 mod tests {
     use super::*;
     use crate::offsets::OffsetsVector;
+
+    /// The block-table locator must answer exactly like the EF scan, on every
+    /// position (in range and past the end), for mixed string lengths that put
+    /// many string starts in one block as well as blocks inside long strings.
+    #[test]
+    fn string_locator_matches_elias_fano() {
+        let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+        for trial in 0..40 {
+            let mut v = vec![0u64];
+            let n = 1 + trial * 7;
+            for _ in 0..n {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                let len = if s.is_multiple_of(5) { 31 + s % 4000 } else { 31 + s % 40 };
+                v.push(v.last().unwrap() + len);
+            }
+            let ef = EliasFanoOffsets::from_vec(&v);
+            let loc = StringLocator::build(&ef).expect("fits u32");
+            for pos in 0..=*v.last().unwrap() + 70 {
+                assert_eq!(loc.locate_with_end(pos), ef.locate_with_end(pos), "pos {pos} trial {trial}");
+            }
+        }
+    }
+
+    #[test]
+    fn string_locator_handles_boundary_and_coordinate_limits() {
+        let cases = [
+            vec![0, 1],
+            vec![0, 16, 31, 32, 47, 48, 49, 1000],
+            vec![0, 31, 62, 4097, 4128],
+            vec![0, 512, 1024, 1025],
+            vec![0, u32::MAX as u64 - 1, u32::MAX as u64],
+        ];
+        for boundaries in cases {
+            let ef = EliasFanoOffsets::from_vec(&boundaries);
+            let locator = StringLocator::build(&ef).unwrap();
+            let total = *boundaries.last().unwrap();
+            let mut positions: Vec<u64> = (0..total.min(10_000) + 2).collect();
+            for &boundary in &boundaries {
+                positions.extend([boundary.saturating_sub(1), boundary, boundary + 1]);
+            }
+            positions.extend([total + 100, u64::MAX]);
+            for pos in positions {
+                assert_eq!(
+                    locator.locate_with_end(pos),
+                    ef.locate_with_end(pos),
+                    "pos={pos}, boundaries={boundaries:?}"
+                );
+            }
+        }
+        assert!(StringLocator::build(&EliasFanoOffsets::from_vec(&[0])).is_none());
+        let wide = EliasFanoOffsets::from_vec(&[0, u32::MAX as u64 + 1]);
+        assert!(StringLocator::build(&wide).is_none());
+    }
 
     /// The `K <= 31` arm of `decode_kmer_at` folds the spill byte in without a
     /// branch. Pin that it computes exactly what the branching form did, over

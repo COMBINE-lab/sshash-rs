@@ -267,7 +267,7 @@ fn select_in_word(word: u64, k: u64) -> u64 {
     // aarch64: no PDEP equivalent; use the byte-wise broadword selection
     #[cfg(target_arch = "aarch64")]
     {
-        return select_in_word_broadword(word, k);
+        select_in_word_broadword(word, k)
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
