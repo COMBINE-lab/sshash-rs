@@ -157,7 +157,6 @@ impl SparseAndSkewIndex {
             }
         }
         assert!(values.next().is_none() && dst == multi_offsets.len(), "bucket sizes do not cover the offsets");
-        drop(values);
         drop(offsets);
         let multi_bounds = EliasFanoOffsets::from_vec(&multi_bounds_vec);
         info!("  Direct bucket layout: {:.2}s — {} multi-position buckets", t0.elapsed().as_secs_f64(), num_multi);
