@@ -15,7 +15,7 @@
 //! of each key (see [`KeyBytes`]), so `u64` minimizers and `u64`/`u128` k-mers
 //! share one MPHF type; queries inline the hash at a constant key length.
 
-use dsi_progress_logger::no_logging;
+use dsi_progress_logger::no_logs;
 use lender::{FallibleLend, FallibleLender, FallibleLending};
 use std::borrow::Borrow;
 use std::io;
@@ -306,7 +306,7 @@ where
         }
         builder = builder.temp_dir(tmp_dir);
     }
-    Mphf::try_new_with_builder(KeyLender { iter: keys, cur: None }, builder, no_logging![])
+    Mphf::try_new_with_builder(KeyLender { iter: keys, cur: None }, builder, no_logs![])
         .unwrap_or_else(|e| panic!("streamed MPHF construction failed: {e:#}"))
 }
 
@@ -320,7 +320,7 @@ where
 /// If the keys contain duplicates.
 pub fn build_mphf_parallel<B: Borrow<KeyBytes> + Sync>(keys: &[B]) -> Mphf {
     let builder = PHastRBuilder::default().sweep_chunks(STREAMING_SWEEP_CHUNKS);
-    Mphf::try_par_new_with_builder(keys, builder, no_logging![])
+    Mphf::try_par_new_with_builder(keys, builder, no_logs![])
         .unwrap_or_else(|e| panic!("MPHF construction failed on {} keys: {e:#}", keys.len()))
 }
 
@@ -334,7 +334,7 @@ fn single_thread_pool() -> rayon::ThreadPool {
 /// Builds on the current pool, which must have a single thread.
 fn build_mphf_on_current_pool<B: Borrow<KeyBytes> + Sync>(keys: &[B]) -> Mphf {
     debug_assert_eq!(rayon::current_num_threads(), 1);
-    Mphf::try_par_new_with_builder(keys, PHastRBuilder::default(), no_logging![])
+    Mphf::try_par_new_with_builder(keys, PHastRBuilder::default(), no_logs![])
         .unwrap_or_else(|e| panic!("MPHF construction failed on {} keys: {e:#}", keys.len()))
 }
 

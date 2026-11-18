@@ -13,7 +13,7 @@ description = "Sparse and Skew Hashing of k-mers - Core library"
 sux = { workspace = true }
 
 # Progress logging for sux constructors (must match sux's version)
-dsi-progress-logger = "0.8.7"
+dsi-progress-logger = "0.8.11"
 
 # Lender trait for streaming MPHF construction (must match sux's version)
 lender = "0.8"

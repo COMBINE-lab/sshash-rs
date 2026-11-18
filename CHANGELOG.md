@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-18
+
 ### Fixed
 
 - Streaming queries now advance `LookupResult::kmer_offset` on successful
@@ -10,6 +12,30 @@
   offset in the concatenated SPSS, not a bit offset; its documentation is corrected.
   This intentionally corrects streamed offsets (including the CLI lookup dump).
   Point lookups, membership, IDs, orientation, and saved index formats are unchanged.
+- Bucket offset starts no longer wrap when an index has at least 2^32
+  super-k-mers; temporary starts use the bit width required by the index.
+  `SpectrumPreservingStringSet::string_offsets` now takes a `u64` string ID
+  instead of `u32`, matching the other string accessors.
+- Preserve empty skew partitions so partition IDs continue to identify the
+  correct MPHF.
+
+### Performance
+
+- Streaming queries compute the minimizer only when a new dictionary seed
+  needs it, avoiding unnecessary work during successful extensions.
+
+### Dependencies
+
+- Require needletail 0.7.4, which upgrades the compression dependencies to
+  patched zstd and zstd-safe releases, and memmap2 0.9.11 or newer for its
+  pointer-offset soundness fix.
+- Require dsi-progress-logger 0.8.11 and use `no_logs!` during MPHF construction
+  so disabled progress logging generates no logging code.
+- Refresh `Cargo.lock`, including sux 0.15.4, rustix 1.1.6, zstd 0.14.4,
+  zstd-safe 8.3.0, zstd-sys 2.1.3, and PyO3 0.29.3. The compression stack and
+  rustix updates address the remaining RustSec advisories in the old lockfile.
+- Keep rapidhash pinned to 4.5.1 and epserde at 0.13.2. Saved index formats
+  and Python 3.8 support are unchanged.
 
 ## [0.8.1] - 2026-10-30
 

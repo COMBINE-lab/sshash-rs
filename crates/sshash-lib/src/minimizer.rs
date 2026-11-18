@@ -161,7 +161,7 @@ where
         }
     }
     // lo and hi are the two equally-closest loci (mirror images), or one locus.
-    if lo == hi || !(kmer_rc.bits() < kmer.bits()) {
+    if lo == hi || kmer_rc.bits() >= kmer.bits() {
         lo
     } else {
         hi
