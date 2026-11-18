@@ -398,7 +398,7 @@ impl MinimizerIterator {
         // Start of the k-mer `kmer` (the last k-mer seen started at
         // `self.position - ws`).
         let target = self.position - ws + steps;
-        if steps > ws || self.min_pos_in_kmer as u64 <= steps - 1 {
+        if steps > ws || (self.min_pos_in_kmer as u64) < steps {
             // The minimum leaves the window before `kmer` (or right at it):
             // nothing to replay, re-scan `kmer` itself.
             self.position = target;
