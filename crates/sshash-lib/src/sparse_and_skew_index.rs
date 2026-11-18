@@ -85,32 +85,21 @@ impl SparseAndSkewIndex {
         let num_buckets = buckets.len();
         let t0 = std::time::Instant::now();
 
-        let mut extras = Vec::with_capacity(num_buckets + 1);
-        extras.push(0u64);
-        let mut total_super_kmers: usize = 0;
-        let mut max_bucket_size: usize = 0;
-        let mut offset_start_by_orig: Vec<u32> = vec![0; num_buckets];
-        for i in 0..num_buckets {
-            let orig_idx = mphf_order.map_or(i, |order| order[i]);
-            let size = buckets[orig_idx].size();
-            if size > max_bucket_size { max_bucket_size = size; }
-            offset_start_by_orig[orig_idx] = total_super_kmers as u32;
-            total_super_kmers += size;
-            let prev = *extras.last().unwrap();
-            extras.push(prev + (size as u64).saturating_sub(1));
-        }
-        let num_super_kmers_before_bucket = EliasFanoOffsets::from_vec(&extras);
-        drop(extras);
+        let BucketOffsetStarts {
+            offset_start_by_orig,
+            num_super_kmers_before_bucket,
+            total_super_kmers,
+            max_bucket_size,
+        } = bucket_offset_starts(num_buckets, mphf_order, |b| buckets[b].size());
         info!("  Pass 1 (EF build): {:.2}s — {} buckets, {} total super-kmers, max_bucket_size={}",
             t0.elapsed().as_secs_f64(), num_buckets, total_super_kmers, max_bucket_size);
         let t1 = std::time::Instant::now();
 
         let mut offsets = BitFieldVec::new(num_bits_per_offset.max(1), total_super_kmers);
         let mut heavy_buckets_for_skew: Vec<(usize, usize)> = Vec::new();
-        for orig_idx in 0..num_buckets {
-            let bucket = &buckets[orig_idx];
+        for (orig_idx, bucket) in buckets.iter().enumerate() {
             let size = bucket.size();
-            let idx0 = offset_start_by_orig[orig_idx] as usize;
+            let idx0 = offset_start_by_orig.index_value(orig_idx);
             // Forward scheme: one tuple per minimizer position (enforced at
             // classification/merge time), so every tuple is one write.
             debug_assert!(bucket.tuples.windows(2).all(|p| p[0].pos_in_seq() != p[1].pos_in_seq()));
@@ -255,24 +244,14 @@ impl SparseAndSkewIndex {
 
         // --- Pass 1: Build EF + compute per-bucket offset positions ---
         // Then drop mphf_order to free ~3.2 GB.
-        let mut extras = Vec::with_capacity(num_buckets + 1);
-        extras.push(0u64);
-        let mut total_super_kmers: usize = 0;
-        let mut max_bucket_size: usize = 0;
-        let mut offset_start_by_orig: Vec<u32> = vec![0; num_buckets];
-        for i in 0..num_buckets {
-            let orig_idx = mphf_order.as_ref().map_or(i, |order| order[i]);
-            let size = bucket_meta.cached_sizes[orig_idx] as usize;
-            if size > max_bucket_size {
-                max_bucket_size = size;
-            }
-            offset_start_by_orig[orig_idx] = total_super_kmers as u32;
-            total_super_kmers += size;
-            let prev = *extras.last().unwrap();
-            extras.push(prev + (size as u64).saturating_sub(1));
-        }
-        let num_super_kmers_before_bucket = EliasFanoOffsets::from_vec(&extras);
-        drop(extras);
+        let BucketOffsetStarts {
+            offset_start_by_orig,
+            num_super_kmers_before_bucket,
+            total_super_kmers,
+            max_bucket_size,
+        } = bucket_offset_starts(num_buckets, mphf_order.as_deref(), |b| {
+            bucket_meta.cached_sizes[b] as usize
+        });
         // Free mphf_order — no longer needed after offset_start_by_orig is computed
         drop(mphf_order);
         info!("  Pass 1 (EF build): {:.2}s — {} buckets, {} total super-kmers, max_bucket_size={}",
@@ -296,7 +275,7 @@ impl SparseAndSkewIndex {
 
             // Forward scheme: one tuple per minimizer position (enforced at
             // merge time), so every tuple is one offset write.
-            let mut write_idx = offset_start_by_orig[bucket_idx] as usize;
+            let mut write_idx = offset_start_by_orig.index_value(bucket_idx);
             let mut prev_pos_in_seq;
 
             if is_heavy {
@@ -804,10 +783,102 @@ impl Default for SkewIndex {
     }
 }
 
+/// Bucket layout in the flat offsets array, buckets laid out in MPHF order.
+struct BucketOffsetStarts {
+    /// Each bucket's first offset, indexed by original bucket, packed at
+    /// the width of the largest start (including starts above u32::MAX).
+    offset_start_by_orig: BitFieldVec,
+    /// Super-k-mers before each bucket, beyond each bucket's first
+    num_super_kmers_before_bucket: EliasFanoOffsets,
+    total_super_kmers: usize,
+    max_bucket_size: usize,
+}
+
+/// Lay out buckets `mphf_order[0], mphf_order[1], ...` (identity if `None`)
+/// consecutively; `size_of(b)` is original bucket `b`'s size.
+fn bucket_offset_starts(
+    num_buckets: usize,
+    mphf_order: Option<&[usize]>,
+    size_of: impl Fn(usize) -> usize,
+) -> BucketOffsetStarts {
+    let mut extras = Vec::with_capacity(num_buckets + 1);
+    extras.push(0u64);
+    let mut total_super_kmers: usize = 0;
+    let mut max_bucket_size: usize = 0;
+    for i in 0..num_buckets {
+        let orig_idx = mphf_order.map_or(i, |order| order[i]);
+        let size = size_of(orig_idx);
+        max_bucket_size = max_bucket_size.max(size);
+        total_super_kmers += size;
+        let prev = *extras.last().unwrap();
+        extras.push(prev + (size as u64).saturating_sub(1));
+    }
+    // Every nonempty bucket starts below total_super_kmers. Reuse the
+    // uncompressed EF prefix sums to scatter starts, without storing a
+    // temporary full-width starts vector or re-reading bucket sizes.
+    let max_start = if num_buckets == 0 {
+        0
+    } else {
+        extras[num_buckets - 1] as usize + num_buckets - 1
+    };
+    let width = (usize::BITS - max_start.leading_zeros()).max(1) as usize;
+    let mut offset_start_by_orig = BitFieldVec::new(width, num_buckets);
+    for (i, &extra) in extras[..num_buckets].iter().enumerate() {
+        let orig_idx = mphf_order.map_or(i, |order| order[i]);
+        offset_start_by_orig.set_value(orig_idx, extra as usize + i);
+    }
+    BucketOffsetStarts {
+        offset_start_by_orig,
+        num_super_kmers_before_bucket: EliasFanoOffsets::from_vec(&extras),
+        total_super_kmers,
+        max_bucket_size,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::builder::minimizer_tuples::MinimizerTuple;
+
+    #[test]
+    fn test_packed_start_widths() {
+        for sizes in [vec![], vec![1], vec![8, 1], vec![7, 1], vec![1, 1000]] {
+            let n = sizes.len();
+            let order: Vec<usize> = (0..n).rev().collect();
+            let starts = bucket_offset_starts(n, Some(&order), |b| sizes[b]);
+            let mut total = 0;
+            let mut max_start = 0usize;
+            for &b in &order {
+                assert_eq!(starts.offset_start_by_orig.index_value(b), total);
+                max_start = total;
+                total += sizes[b];
+            }
+            assert_eq!(starts.total_super_kmers, total);
+            assert_eq!(
+                starts.offset_start_by_orig.bit_width(),
+                (usize::BITS - max_start.leading_zeros()).max(1) as usize
+            );
+        }
+    }
+
+    #[test]
+    fn test_bucket_offset_starts_past_u32() {
+        // Sizes summing past u32::MAX, permuted so later buckets would overwrite
+        // earlier slots if starts wrapped
+        let sizes = [3usize << 31, 3 << 31, 1, 2];
+        let order = [2usize, 0, 3, 1];
+        let starts = bucket_offset_starts(sizes.len(), Some(&order), |b| sizes[b]);
+        assert_eq!(
+            starts.offset_start_by_orig.iter().collect::<Vec<_>>(),
+            vec![1, (3 << 31) + 3, 0, (3 << 31) + 1]
+        );
+        assert_eq!(starts.total_super_kmers, (3 << 32) + 3);
+        assert_eq!(starts.max_bucket_size, 3 << 31);
+        for (i, &b) in order.iter().enumerate() {
+            let begin = starts.num_super_kmers_before_bucket.access(i) as usize + i;
+            assert_eq!(begin, starts.offset_start_by_orig.index_value(b));
+        }
+    }
 
     #[test]
     fn test_sparse_index_creation() {

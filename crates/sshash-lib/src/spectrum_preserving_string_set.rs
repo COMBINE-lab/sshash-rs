@@ -59,7 +59,7 @@ impl SpectrumPreservingStringSet {
     }
 
     /// Get the string offsets (begin, end) for a string ID
-    pub fn string_offsets(&self, string_id: u32) -> (u64, u64) {
+    pub fn string_offsets(&self, string_id: u64) -> (u64, u64) {
         let id = string_id as usize;
         let begin = self.offsets.access(id);
         let end = self.offsets.access(id + 1);
@@ -156,7 +156,7 @@ impl SpectrumPreservingStringSet {
     
     /// Get the length of a specific string in bases
     pub fn string_length(&self, string_id: u64) -> usize {
-        let (begin, end) = self.string_offsets(string_id as u32);
+        let (begin, end) = self.string_offsets(string_id);
         (end - begin) as usize
     }
     
@@ -168,7 +168,7 @@ impl SpectrumPreservingStringSet {
     where
         Kmer<K>: KmerBits,
     {
-        let (begin, _end) = self.string_offsets(string_id as u32);
+        let (begin, _end) = self.string_offsets(string_id);
         let start_base = (begin as usize) + kmer_pos;
         
         let byte_offset = start_base / 4;
