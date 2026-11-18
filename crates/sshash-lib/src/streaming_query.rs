@@ -106,6 +106,10 @@ where
     // canonical scheme is mirror-equivariant, so no RC iterator is needed).
     minimizer_it: MinimizerIterator,
     curr_mini_info: MinimizerInfo,
+    /// K-mers streamed since `minimizer_it` last saw one (`lookup_with_dict`
+    /// only): extensions along a string do not need the minimizer, so it is
+    /// caught up only when a seed does (see `MinimizerIterator::advance`).
+    mini_lag: u64,
 
     // String extension state
     remaining_string_bases: u64,
@@ -167,6 +171,7 @@ where
             kmer_rc: Kmer::new(<Kmer<K> as KmerBits>::from_u64(0)),
             minimizer_it: MinimizerIterator::with_seed(k, m, seed),
             curr_mini_info: dummy_mini,
+            mini_lag: 0,
             remaining_string_bases: 0,
             buf_bit_pos: 0,
             buf: 0,
@@ -190,6 +195,7 @@ where
         self.remaining_string_bases = 0;
         self.result = LookupResult::not_found();
         self.minimizer_it.set_position(0);
+        self.mini_lag = 0;
         // The stream coordinate frame restarts, so the position-anchored
         // singleton memo must not survive; the bucket cache's contents are
         // pure functions of the minimizer value but are dropped with it.
@@ -240,11 +246,11 @@ where
             let complement = crate::encoding::complement_base(encoded);
             self.kmer_rc = self.kmer_rc.append_base(complement);
         }
-
-        self.curr_mini_info = self.minimizer_it.next(&self.kmer, &self.kmer_rc);
+        self.mini_lag += 1;
 
         // 3. Compute result (either extend or search)
         if self.remaining_string_bases == 0 {
+            self.sync_minimizer();
             self.seed_with_dict(dict);
         } else {
             self.try_extend(dict);
@@ -301,7 +307,8 @@ where
             self.kmer_rc = self.kmer_rc.append_base(complement);
         }
 
-        self.curr_mini_info = self.minimizer_it.next(&self.kmer, &self.kmer_rc);
+        self.mini_lag += 1;
+        self.sync_minimizer();
 
         // 3. Compute result (either extend or search)
         match dict_opt {
@@ -324,6 +331,13 @@ where
         self.start = false;
 
         self.result
+    }
+
+    /// Bring `curr_mini_info` up to the current k-mer.
+    #[inline(always)]
+    fn sync_minimizer(&mut self) {
+        self.curr_mini_info = self.minimizer_it.advance(self.mini_lag, &self.kmer, &self.kmer_rc);
+        self.mini_lag = 0;
     }
 
     /// Validate a full k-mer byte slice
@@ -498,6 +512,7 @@ where
                 return;
             }
         }
+        self.sync_minimizer();
         self.seed_with_dict(dict);
     }
 
