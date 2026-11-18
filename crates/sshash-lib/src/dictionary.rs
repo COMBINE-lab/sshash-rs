@@ -344,8 +344,8 @@ impl Dictionary {
                 // consumes the same values) so a streaming follow-up with
                 // this minimizer skips the MPHF/EF/offset work entirely.
                 c.positions[0] = first_pos;
-                for i in 1..n {
-                    c.positions[i] = self.index.offsets.index_value(begin + i) as u64;
+                for (i, slot) in c.positions[..n].iter_mut().enumerate().skip(1) {
+                    *slot = self.index.offsets.index_value(begin + i) as u64;
                 }
                 c.size = n;
                 let positions = c.positions;

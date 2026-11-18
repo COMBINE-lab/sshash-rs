@@ -454,7 +454,7 @@ mod tests {
                 s ^= s << 13;
                 s ^= s >> 7;
                 s ^= s << 17;
-                let len = if s % 5 == 0 { 31 + s % 4000 } else { 31 + s % 40 };
+                let len = if s.is_multiple_of(5) { 31 + s % 4000 } else { 31 + s % 40 };
                 v.push(v.last().unwrap() + len);
             }
             let ef = EliasFanoOffsets::from_vec(&v);
