@@ -616,6 +616,11 @@ impl SkewIndex {
                     positions.push(reordered_positions);
                     partition_kmers.clear();
                     partition_positions.clear();
+                } else {
+                    // Lookup addresses partitions by size band, including empty
+                    // bands. Keep their slots so later bands cannot shift down.
+                    mphfs.push(None);
+                    positions.push(BitFieldVec::new(num_bits_per_pos, 0));
                 }
 
                 lower = upper;
