@@ -63,7 +63,7 @@ pub struct SparseAndSkewIndex {
 
 /// Where a bucket's super-k-mer offsets are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BucketSpan {
+pub enum BucketSpan {
     /// A singleton bucket, with its only offset.
     Single(u64),
     /// `multi_offsets[begin..end]`.
@@ -72,8 +72,9 @@ pub(crate) enum BucketSpan {
 
 impl BucketSpan {
     /// Number of super-k-mers in the bucket.
+    #[allow(clippy::len_without_is_empty)] // a bucket is never empty
     #[inline(always)]
-    pub(crate) fn len(self) -> usize {
+    pub fn len(self) -> usize {
         match self {
             BucketSpan::Single(_) => 1,
             BucketSpan::Multi(b, e) => e - b,
@@ -89,7 +90,7 @@ impl SparseAndSkewIndex {
 
     /// Locate a bucket's super-k-mer offsets.
     #[inline(always)]
-    pub(crate) fn bucket(&self, bucket_id: usize) -> BucketSpan {
+    pub fn bucket(&self, bucket_id: usize) -> BucketSpan {
         let e = self.bucket_entries.index_value(bucket_id) as u64;
         if e < self.multi_base {
             BucketSpan::Single(e)
@@ -101,7 +102,7 @@ impl SparseAndSkewIndex {
 
     /// The `i`-th super-k-mer offset of a bucket (`i < span.len()`).
     #[inline(always)]
-    pub(crate) fn bucket_offset(&self, span: BucketSpan, i: usize) -> u64 {
+    pub fn bucket_offset(&self, span: BucketSpan, i: usize) -> u64 {
         match span {
             BucketSpan::Single(pos) => {
                 debug_assert_eq!(i, 0);

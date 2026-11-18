@@ -12,8 +12,9 @@
   smaller (the bucket-boundary Elias-Fano is gone). Format 6.0 indexes are
   still read and converted on load (~0.1 s); older readers reject 7.0 with
   the usual "must be rebuilt" error. `SparseAndSkewIndex`'s `offsets` and
-  `num_super_kmers_before_bucket` fields and `locate_bucket` are replaced,
-  so this needs a minor version bump.
+  `num_super_kmers_before_bucket` fields and `locate_bucket` are replaced by
+  `bucket(id) -> BucketSpan` and `bucket_offset(span, i)`, so this needs a
+  minor version bump.
 
 ### Fixed
 
