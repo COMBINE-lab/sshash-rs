@@ -363,14 +363,16 @@ impl SpectrumPreservingStringSet {
 ///
 /// `locate_with_end` on the EF costs a `DArray` select0, a bit scan and
 /// low-bit extraction: three dependent memory levels per k-mer seed. Here a
-/// block table maps `pos >> shift` straight to the string holding the block's
-/// first base, so a locate is one table read plus the two neighbouring
-/// `begins` entries (usually one cache line). `shift` is chosen so blocks are
-/// about one string long; a block holding several string starts is resolved
-/// by a binary search bounded by the next block's entry.
+/// block table maps `pos >> shift` to the string holding the block's first
+/// base. A forward scan of `begins` finds the first boundary after the query,
+/// without reading the next block entry. The scan is linear in the number of
+/// intervening boundaries; it does not have a logarithmic worst-case bound.
+/// `shift` makes the block width the largest power of two not exceeding the
+/// average string length (at least one base).
 ///
-/// Costs `4 * (num_strings + 1) + 4 * (total_bases >> shift)` bytes, about
-/// 8 bytes per string (3.1 MB for gencode's 387k unitigs).
+/// Adds `4 * (num_strings + 1) + 4 * ceil(total_bases / block_width)` bytes
+/// alongside the retained Elias-Fano offsets, generally about 8-12 bytes per
+/// string. The table is not serialized and must be rebuilt on every load.
 struct StringLocator {
     shift: u32,
     /// All string boundaries, `begins[num_strings] == total_bases`.
@@ -410,17 +412,14 @@ impl StringLocator {
     #[inline(always)]
     fn locate_with_end(&self, pos: u64) -> Option<(u64, u64, u64)> {
         let b = (pos >> self.shift) as usize;
-        let lo = *self.blocks.get(b)? as usize;
-        // The answer lies in [lo, hi]: hi is the string holding the next
-        // block's first base, or the last string.
-        let hi = match self.blocks.get(b + 1) {
-            Some(&h) => h as usize,
-            None => self.begins.len() - 2,
-        };
-        let id = lo + self.begins[lo + 1..=hi].partition_point(|&x| x as u64 <= pos);
-        let begin = self.begins[id] as u64;
-        let end = self.begins[id + 1] as u64;
-        (pos < end).then_some((id as u64, begin, end))
+        let mut id = *self.blocks.get(b)? as usize;
+        let mut end = self.begins[id + 1] as u64;
+        while end <= pos {
+            id += 1;
+            // Crossing the final sentinel means the query is out of bounds.
+            end = *self.begins.get(id + 1)? as u64;
+        }
+        Some((id as u64, self.begins[id] as u64, end))
     }
 }
 
@@ -463,6 +462,37 @@ mod tests {
                 assert_eq!(loc.locate_with_end(pos), ef.locate_with_end(pos), "pos {pos} trial {trial}");
             }
         }
+    }
+
+    #[test]
+    fn string_locator_handles_boundary_and_coordinate_limits() {
+        let cases = [
+            vec![0, 1],
+            vec![0, 16, 31, 32, 47, 48, 49, 1000],
+            vec![0, 31, 62, 4097, 4128],
+            vec![0, 512, 1024, 1025],
+            vec![0, u32::MAX as u64 - 1, u32::MAX as u64],
+        ];
+        for boundaries in cases {
+            let ef = EliasFanoOffsets::from_vec(&boundaries);
+            let locator = StringLocator::build(&ef).unwrap();
+            let total = *boundaries.last().unwrap();
+            let mut positions: Vec<u64> = (0..total.min(10_000) + 2).collect();
+            for &boundary in &boundaries {
+                positions.extend([boundary.saturating_sub(1), boundary, boundary + 1]);
+            }
+            positions.extend([total + 100, u64::MAX]);
+            for pos in positions {
+                assert_eq!(
+                    locator.locate_with_end(pos),
+                    ef.locate_with_end(pos),
+                    "pos={pos}, boundaries={boundaries:?}"
+                );
+            }
+        }
+        assert!(StringLocator::build(&EliasFanoOffsets::from_vec(&[0])).is_none());
+        let wide = EliasFanoOffsets::from_vec(&[0, u32::MAX as u64 + 1]);
+        assert!(StringLocator::build(&wide).is_none());
     }
 
     /// The `K <= 31` arm of `decode_kmer_at` folds the spill byte in without a
