@@ -1,18 +1,26 @@
 //! Sparse and Skew Index for k-mer lookup
 //!
-//! This module implements the SSHash lookup index matching the C++ sshash
-//! architecture:
-//! - `num_super_kmers_before_bucket`: Elias-Fano monotone sequence for bucket
-//!   boundary routing (n = num_buckets + 1)
-//! - `offsets`: flat BitFieldVec storing one pos_in_seq per super-kmer
-//! - `SkewIndex`: partitioned MPHFs for heavy buckets (size > MIN_BUCKET_SIZE)
+//! Buckets (one per minimizer, in MPHF order) use one of two layouts:
+//! - `Flat` (format 6.0, and the fallback): every super-k-mer offset in one
+//!   array, bucket after bucket, delimited by an Elias-Fano of the bucket
+//!   boundaries, so each lookup pays an Elias-Fano select.
+//! - `Inline` (format 7.0): each bucket's first offset in a direct array.
+//!   A bitmap with sampled ranks marks the multi-position buckets, whose
+//!   remaining offsets sit in a second array delimited by an Elias-Fano. One
+//!   flag per block of [`HEAVY_BLOCK`] buckets marks blocks holding a heavy
+//!   bucket.
 //!
-//! Lookup path:
-//!   bucket_id = mphf(minimizer)
-//!   (begin, end) = locate_bucket(bucket_id)
-//!   n = end - begin
-//!   if ceil_log2(n) > MIN_L: skew_index.lookup(kmer, ceil_log2(n)) -> within-bucket pos -> offsets[begin + pos]
-//!   else:                     linear scan offsets[begin..end]
+//! A build keeps whichever layout is smaller in total. A loaded 6.0 index stays
+//! flat; [`SparseAndSkewIndex::upgrade_layout`] converts it explicitly.
+//!
+//! Inline lookup path:
+//!   bucket_id = mphf(minimizer), first = first[bucket_id]
+//!   singleton: `first` is the only position
+//!   multi-position, block without heavy buckets: try `first`; only if that
+//!     fails, decode the rest (rank, Elias-Fano pair) and scan it
+//!   multi-position, heavy-flagged block: decode the bounds at once, so a
+//!     heavy bucket goes straight to the skew index
+//! - `SkewIndex`: partitioned MPHFs for heavy buckets (size > MIN_BUCKET_SIZE)
 
 use crate::builder::buckets::{Bucket, ClassifiedBuckets, MIN_BUCKET_SIZE};
 use crate::builder::dictionary_builder::BucketMetadata;
@@ -27,46 +35,318 @@ use sux::bits::bit_field_vec::BitFieldVec;
 use tracing::info;
 use value_traits::slices::{SliceByValue, SliceByValueMut};
 
-/// Sparse and skew index data structure (C++ compatible architecture)
-///
-/// This index enables O(1) lookup of k-mer positions by:
-/// 1. Querying the minimizers control map to get the bucket_id
-/// 2. Using locate_bucket(bucket_id) to find the range [begin, end) in offsets
-/// 3. Size-based routing: linear scan for small buckets, MPHF for heavy buckets
-pub struct SparseAndSkewIndex {
-    /// Monotone Elias-Fano sequence: `extras[i]` = cumulative (bucket_size - 1)
-    /// for buckets 0..i. Used to locate bucket boundaries:
-    ///   begin = ef.access(id) + id
-    ///   end   = ef.access(id+1) + id + 1
-    pub num_super_kmers_before_bucket: EliasFanoOffsets,
+/// Buckets per heavy-block flag of the inline layout.
+pub const HEAVY_BLOCK: usize = 64;
+/// Bitmap words per sampled rank (one `u64` per 512 buckets).
+const RANK_WORDS: usize = 8;
+/// Serialized layout tags (format 7.0).
+const LAYOUT_FLAT: u64 = 0;
+const LAYOUT_INLINE: u64 = 1;
 
-    /// One entry per super-kmer: absolute offset (pos_in_seq) into SPSS.
-    /// Entries are ordered by bucket (in MPHF order), then by position within
-    /// each bucket.
-    pub offsets: BitFieldVec,
+/// Sparse and skew index: where each bucket's super-k-mers are, plus the skew
+/// index of the heavy buckets.
+pub struct SparseAndSkewIndex {
+    layout: Layout,
 
     /// Skew index for heavy buckets (size > MIN_BUCKET_SIZE)
     pub skew_index: SkewIndex,
+}
+
+enum Layout {
+    /// `extras[i]` = sum over buckets j < i of (size_j - 1); bucket i spans
+    /// `offsets[extras[i] + i .. extras[i + 1] + i + 1]`.
+    Flat { extras: EliasFanoOffsets, offsets: BitFieldVec },
+    Inline(InlineFirst),
+}
+
+struct InlineFirst {
+    /// Each bucket's first super-k-mer offset.
+    first: BitFieldVec,
+    /// Bit i: bucket i has more than one position.
+    multi: Vec<u64>,
+    /// Set bits of `multi` before each block of [`RANK_WORDS`] words.
+    /// Rebuilt on load, not serialized.
+    ranks: Vec<u64>,
+    /// Bit j: a bucket in `[j * HEAVY_BLOCK, (j + 1) * HEAVY_BLOCK)` is heavy.
+    heavy: Vec<u64>,
+    /// Prefix sums of (size - 1) over the multi-position buckets.
+    rest_bounds: EliasFanoOffsets,
+    /// The other offsets of the multi-position buckets, bucket after bucket.
+    rest: BitFieldVec,
+}
+
+#[inline(always)]
+fn is_heavy(size: usize) -> bool {
+    size > MIN_BUCKET_SIZE
+}
+
+fn sample_ranks(words: &[u64]) -> Vec<u64> {
+    let mut acc = 0u64;
+    words
+        .chunks(RANK_WORDS)
+        .map(|block| {
+            let r = acc;
+            acc += block.iter().map(|w| w.count_ones() as u64).sum::<u64>();
+            r
+        })
+        .collect()
+}
+
+/// Bucket sizes of a flat layout, from its boundaries.
+fn flat_sizes(extras: &EliasFanoOffsets) -> impl Iterator<Item = usize> + '_ {
+    let mut it = extras.iter();
+    let mut prev = it.next().unwrap_or(0);
+    it.map(move |x| {
+        let size = (x - prev) as usize + 1;
+        prev = x;
+        size
+    })
+}
+
+impl InlineFirst {
+    /// The directory of buckets of the given sizes (MPHF order); `first` and
+    /// `rest` are left empty for the caller to fill.
+    fn directory(num_buckets: usize, sizes: impl Iterator<Item = usize>) -> Self {
+        let mut multi = vec![0u64; num_buckets.div_ceil(64)];
+        let mut heavy = vec![0u64; num_buckets.div_ceil(64 * HEAVY_BLOCK)];
+        let mut bounds = vec![0u64];
+        for (i, size) in sizes.enumerate() {
+            if size > 1 {
+                multi[i / 64] |= 1 << (i % 64);
+                bounds.push(bounds.last().unwrap() + size as u64 - 1);
+                if is_heavy(size) {
+                    let block = i / HEAVY_BLOCK;
+                    heavy[block / 64] |= 1 << (block % 64);
+                }
+            }
+        }
+        Self {
+            first: BitFieldVec::new(1, 0),
+            ranks: sample_ranks(&multi),
+            multi,
+            heavy,
+            rest_bounds: EliasFanoOffsets::from_vec(&bounds),
+            rest: BitFieldVec::new(1, 0),
+        }
+    }
+
+    /// Bytes beyond the offsets themselves.
+    fn directory_bytes(&self) -> u64 {
+        ((self.multi.len() + self.ranks.len() + self.heavy.len()) * 8) as u64
+            + self.rest_bounds.num_bytes()
+    }
+
+    #[inline(always)]
+    fn is_multi(&self, i: usize) -> bool {
+        self.multi[i / 64] >> (i % 64) & 1 != 0
+    }
+
+    #[inline(always)]
+    fn in_heavy_block(&self, i: usize) -> bool {
+        let block = i / HEAVY_BLOCK;
+        self.heavy[block / 64] >> (block % 64) & 1 != 0
+    }
+
+    /// Multi-position buckets before bucket `i`.
+    #[inline(always)]
+    fn rank(&self, i: usize) -> usize {
+        let w = i / 64;
+        let block = w / RANK_WORDS;
+        let mut r = self.ranks[block];
+        for &x in &self.multi[block * RANK_WORDS..w] {
+            r += x.count_ones() as u64;
+        }
+        (r + (self.multi[w] & ((1u64 << (i % 64)) - 1)).count_ones() as u64) as usize
+    }
+
+    /// Span of multi-position bucket `i`, whose first offset is `first`.
+    #[inline(always)]
+    fn multi_span(&self, i: usize, first: u64) -> BucketSpan {
+        let (b, e) = self.rest_bounds.access_pair(self.rank(i));
+        BucketSpan::Inline(first, b as usize, e as usize)
+    }
+}
+
+/// The inline directory for a flat layout whose boundaries are `extras`, when
+/// the inline layout is smaller in total (directory, ranks, flags and
+/// word-padded offsets); `None` keeps the flat layout.
+fn inline_if_smaller(
+    extras: &EliasFanoOffsets,
+    sizes: impl Iterator<Item = usize>,
+    total_offsets: usize,
+    width: usize,
+    force: bool,
+) -> Option<InlineFirst> {
+    let num_buckets = extras.len().saturating_sub(1);
+    let dir = InlineFirst::directory(num_buckets, sizes);
+    let words = |n: usize| (n * width).div_ceil(64) as u64 * 8;
+    let inline = dir.directory_bytes() + words(num_buckets) + words(total_offsets - num_buckets);
+    let flat = extras.num_bytes() + words(total_offsets);
+    info!("  Bucket layout: inline {} bytes, flat {} bytes", inline, flat);
+    (force || inline < flat).then_some(dir)
+}
+
+/// Where a bucket's super-k-mer offsets are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketSpan {
+    /// A singleton bucket of the inline layout, with its only offset.
+    Single(u64),
+    /// Flat layout: `offsets[begin..end]`.
+    Flat(usize, usize),
+    /// Inline layout: the first offset, then `rest[begin..end]`.
+    Inline(u64, usize, usize),
+}
+
+impl BucketSpan {
+    /// Number of super-k-mers in the bucket.
+    #[allow(clippy::len_without_is_empty)] // a bucket is never empty
+    #[inline(always)]
+    pub fn len(self) -> usize {
+        match self {
+            BucketSpan::Single(_) => 1,
+            BucketSpan::Flat(b, e) => e - b,
+            BucketSpan::Inline(_, b, e) => e - b + 1,
+        }
+    }
+}
+
+/// What a lookup learns from one bucket entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Probe {
+    /// The whole span.
+    Span(BucketSpan),
+    /// A light multi-position bucket of the inline layout: its first offset
+    /// and id, the rest not decoded ([`SparseAndSkewIndex::rest_span`]).
+    First(u64, usize),
 }
 
 impl SparseAndSkewIndex {
     /// Create a new empty index
     pub fn new() -> Self {
         Self {
-            num_super_kmers_before_bucket: EliasFanoOffsets::from_vec(&[0]),
-            offsets: BitFieldVec::new(1, 0),
+            layout: Layout::Flat {
+                extras: EliasFanoOffsets::from_vec(&[0]),
+                offsets: BitFieldVec::new(1, 0),
+            },
             skew_index: SkewIndex::new(),
         }
     }
 
-    /// Locate a bucket's range in the offsets array.
-    ///
-    /// Returns `(begin, end)` such that `offsets[begin..end]` contains
-    /// all super-kmer positions for the given bucket.
+    /// Whether the buckets use the inline-first layout (else the flat one).
+    pub fn is_inline(&self) -> bool {
+        matches!(self.layout, Layout::Inline(_))
+    }
+
+    /// Locate a bucket's super-k-mer offsets.
+    #[inline(always)]
+    pub fn bucket(&self, bucket_id: usize) -> BucketSpan {
+        match self.probe(bucket_id) {
+            Probe::Span(span) => span,
+            Probe::First(first, id) => self.rest_span(id, first),
+        }
+    }
+
+    /// Read a bucket's entry, leaving the rest of a light multi-position
+    /// inline bucket undecoded.
+    #[inline(always)]
+    pub(crate) fn probe(&self, bucket_id: usize) -> Probe {
+        match &self.layout {
+            Layout::Flat { extras, .. } => {
+                let (b, e) = extras.access_pair(bucket_id);
+                Probe::Span(BucketSpan::Flat(b as usize + bucket_id, e as usize + bucket_id + 1))
+            }
+            Layout::Inline(a) => {
+                let first = a.first.index_value(bucket_id) as u64;
+                if !a.is_multi(bucket_id) {
+                    Probe::Span(BucketSpan::Single(first))
+                } else if a.in_heavy_block(bucket_id) {
+                    Probe::Span(a.multi_span(bucket_id, first))
+                } else {
+                    Probe::First(first, bucket_id)
+                }
+            }
+        }
+    }
+
+    /// The whole span of a [`Probe::First`] bucket.
     #[inline]
-    pub fn locate_bucket(&self, bucket_id: usize) -> (usize, usize) {
-        let (b, e) = self.num_super_kmers_before_bucket.access_pair(bucket_id);
-        (b as usize + bucket_id, e as usize + bucket_id + 1)
+    pub(crate) fn rest_span(&self, bucket_id: usize, first: u64) -> BucketSpan {
+        match &self.layout {
+            Layout::Inline(a) => a.multi_span(bucket_id, first),
+            Layout::Flat { .. } => unreachable!("flat buckets are always decoded whole"),
+        }
+    }
+
+    /// The `i`-th super-k-mer offset of a bucket (`i < span.len()`).
+    #[inline(always)]
+    pub fn bucket_offset(&self, span: BucketSpan, i: usize) -> u64 {
+        match (span, &self.layout) {
+            (BucketSpan::Single(pos), _) => {
+                debug_assert_eq!(i, 0);
+                pos
+            }
+            (BucketSpan::Inline(first, _, _), _) if i == 0 => first,
+            (BucketSpan::Inline(_, b, _), Layout::Inline(a)) => a.rest.index_value(b + i - 1) as u64,
+            (BucketSpan::Flat(b, _), Layout::Flat { offsets, .. }) => offsets.index_value(b + i) as u64,
+            _ => unreachable!("span from another layout"),
+        }
+    }
+
+    /// Convert a flat index (a loaded format 6.0 index, or a build that fell
+    /// back to flat) to the inline layout when that is smaller in total.
+    /// Returns whether the layout changed. Loading never converts: the
+    /// conversion costs a few hundred milliseconds on a transcriptome, so
+    /// upgrade once and save the result.
+    pub fn upgrade_layout(&mut self) -> bool {
+        self.make_inline(false)
+    }
+
+    /// Test helper: the same buckets in the inline layout, whatever its size.
+    #[cfg(test)]
+    pub(crate) fn force_inline(&mut self) {
+        self.make_inline(true);
+    }
+
+    fn make_inline(&mut self, force: bool) -> bool {
+        let Layout::Flat { extras, offsets } = &self.layout else { return false };
+        let width = offsets.bit_width();
+        let Some(mut a) = inline_if_smaller(extras, flat_sizes(extras), offsets.len(), width, force) else {
+            return false;
+        };
+        let num_buckets = extras.len().saturating_sub(1);
+        a.first = BitFieldVec::new(width, num_buckets);
+        a.rest = BitFieldVec::new(width, offsets.len() - num_buckets);
+        let mut values = offsets.iter();
+        let mut dst = 0usize;
+        for (i, size) in flat_sizes(extras).enumerate() {
+            a.first.set_value(i, values.next().expect("offsets shorter than buckets"));
+            for v in values.by_ref().take(size - 1) {
+                a.rest.set_value(dst, v);
+                dst += 1;
+            }
+        }
+        assert!(values.next().is_none() && dst == a.rest.len(), "bucket sizes do not cover the offsets");
+        self.layout = Layout::Inline(a);
+        true
+    }
+
+    /// Test helper: the same buckets in the flat layout.
+    #[cfg(test)]
+    pub(crate) fn downgrade_layout(&mut self) {
+        let n = self.num_buckets();
+        let mut extras = vec![0u64];
+        let mut offsets = Vec::new();
+        for id in 0..n {
+            let span = self.bucket(id);
+            extras.push(extras.last().unwrap() + span.len() as u64 - 1);
+            offsets.extend((0..span.len()).map(|i| self.bucket_offset(span, i)));
+        }
+        let width = (64 - offsets.iter().max().copied().unwrap_or(0).leading_zeros() as usize).max(1);
+        let mut packed = BitFieldVec::new(width, offsets.len());
+        for (i, &v) in offsets.iter().enumerate() {
+            packed.set_value(i, v as usize);
+        }
+        self.layout = Layout::Flat { extras: EliasFanoOffsets::from_vec(&extras), offsets: packed };
     }
 
     /// Build the sparse and skew index from owned `Bucket` objects (legacy API).
@@ -120,7 +400,7 @@ impl SparseAndSkewIndex {
         let skew_index = SkewIndex::build::<K>(&heavy_refs, max_bucket_size, spss);
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
-        Self { num_super_kmers_before_bucket, offsets, skew_index }
+        Self::flat_upgraded(num_super_kmers_before_bucket, offsets, skew_index)
     }
 
     /// Build the sparse and skew index from in-place classified buckets.
@@ -171,25 +451,57 @@ impl SparseAndSkewIndex {
             (total_super_kmers - num_buckets) as u64,
             starts.iter().enumerate().map(|(i, &s)| s as u64 - i as u64),
         );
-        info!("  Pass 1 (EF build): {:.2}s — {} buckets, {} total super-kmers, max_bucket_size={}",
-            t0.elapsed().as_secs_f64(), num_buckets, total_super_kmers, max_bucket_size);
+        let width = num_bits_per_offset.max(1);
+        let inline = inline_if_smaller(
+            &num_super_kmers_before_bucket,
+            starts.windows(2).map(|w| (w[1] - w[0]) as usize),
+            total_super_kmers,
+            width,
+            false,
+        );
+        info!("  Pass 1 (EF build): {:.2}s — {} buckets, {} total super-kmers, max_bucket_size={}, {} layout",
+            t0.elapsed().as_secs_f64(), num_buckets, total_super_kmers, max_bucket_size,
+            if inline.is_some() { "inline" } else { "flat" });
         let t1 = std::time::Instant::now();
 
-        // --- Pass 2: fill the flat offsets array, buckets in parallel (each
-        // writes its own range; neighbors may share words, hence atomics) ---
-        let offsets: AtomicBitFieldVec<Vec<AtomicUsize>> =
-            AtomicBitFieldVec::new(num_bits_per_offset.max(1), total_super_kmers);
+        // --- Pass 2: fill the offsets, buckets in parallel (each writes its
+        // own ranges; neighbors may share words, hence atomics). `heads` holds
+        // every offset (flat) or each bucket's first one (inline), `rest` the
+        // others; bucket i's rest begins at starts[i] - i. ---
+        let is_inline = inline.is_some();
+        let (heads_len, rest_len) =
+            if is_inline { (num_buckets, total_super_kmers - num_buckets) } else { (total_super_kmers, 0) };
+        let heads: AtomicBitFieldVec<Vec<AtomicUsize>> = AtomicBitFieldVec::new(width, heads_len);
+        let rest: AtomicBitFieldVec<Vec<AtomicUsize>> = AtomicBitFieldVec::new(width, rest_len);
         (0..num_buckets).into_par_iter().with_min_len(1 << 12).for_each(|b| {
-            let idx0 = starts[mphf_index_by_bucket[b] as usize] as usize;
+            let i = mphf_index_by_bucket[b] as usize;
+            let start = starts[i] as usize;
             // Forward scheme: one tuple per minimizer position (enforced at
             // classification time), so every tuple is one write.
             for (off, tuple) in classified.bucket_tuples(b).iter().enumerate() {
-                offsets.set_atomic(idx0 + off, tuple.pos_in_seq() as usize, Relaxed);
+                let pos = tuple.pos_in_seq() as usize;
+                if !is_inline {
+                    heads.set_atomic(start + off, pos, Relaxed);
+                } else if off == 0 {
+                    heads.set_atomic(i, pos, Relaxed);
+                } else {
+                    rest.set_atomic(start - i + off - 1, pos, Relaxed);
+                }
             }
         });
         drop(starts);
         drop(mphf_index_by_bucket);
-        let offsets: BitFieldVec = offsets.try_into().expect("AtomicUsize and usize have the same alignment");
+        let heads: BitFieldVec = heads.try_into().expect("AtomicUsize and usize have the same alignment");
+        let rest: BitFieldVec = rest.try_into().expect("AtomicUsize and usize have the same alignment");
+        let layout = match inline {
+            Some(mut a) => {
+                drop(num_super_kmers_before_bucket);
+                a.first = heads;
+                a.rest = rest;
+                Layout::Inline(a)
+            }
+            None => Layout::Flat { extras: num_super_kmers_before_bucket, offsets: heads },
+        };
         let mut heavy_buckets_for_skew: Vec<(usize, usize)> = (0..num_buckets)
             .into_par_iter()
             .filter_map(|b| {
@@ -214,11 +526,7 @@ impl SparseAndSkewIndex {
         );
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
-        Self {
-            num_super_kmers_before_bucket,
-            offsets,
-            skew_index,
-        }
+        Self { layout, skew_index }
     }
 
     /// Build the sparse and skew index from file tuples (streaming path).
@@ -342,29 +650,45 @@ impl SparseAndSkewIndex {
         let skew_index = SkewIndex::build_inner::<K>(tuples_iter, max_bucket_size, spss);
         info!("  Pass 3 (skew index): {:.2}s", t2.elapsed().as_secs_f64());
 
-        Ok(Self {
-            num_super_kmers_before_bucket,
-            offsets,
-            skew_index,
-        })
+        Ok(Self::flat_upgraded(num_super_kmers_before_bucket, offsets, skew_index))
+    }
+
+    /// A flat index, upgraded to the inline layout when that is smaller.
+    // shortcut: the legacy and external builds lay out flat, then convert, so
+    // they briefly hold both copies of the offsets; build inline directly
+    // there too if their peak memory matters.
+    fn flat_upgraded(extras: EliasFanoOffsets, offsets: BitFieldVec, skew_index: SkewIndex) -> Self {
+        let mut index = Self { layout: Layout::Flat { extras, offsets }, skew_index };
+        index.upgrade_layout();
+        index
     }
 
     /// Get memory usage in bits
     pub fn num_bits(&self) -> u64 {
-        let ef_bits = self.num_super_kmers_before_bucket.num_bits();
-        let offsets_bits = (self.offsets.len() * self.offsets.bit_width()) as u64;
-        let skew_bits = self.skew_index.num_bits();
-        ef_bits + offsets_bits + skew_bits
+        let offsets_bits = match &self.layout {
+            Layout::Flat { offsets, .. } => offsets.len() * offsets.bit_width(),
+            Layout::Inline(a) => a.first.len() * a.first.bit_width() + a.rest.len() * a.rest.bit_width(),
+        } as u64;
+        self.ef_bytes() as u64 * 8 + offsets_bits + self.skew_index.num_bits()
     }
 
-    /// Byte size of EF sequence
+    /// Byte size of the bucket directory: the Elias-Fano bounds, plus, for the
+    /// inline layout, the multi-position bitmap, its ranks and the heavy flags
     pub fn ef_bytes(&self) -> usize {
-        self.num_super_kmers_before_bucket.num_bytes() as usize
+        match &self.layout {
+            Layout::Flat { extras, .. } => extras.num_bytes() as usize,
+            Layout::Inline(a) => a.directory_bytes() as usize,
+        }
     }
 
-    /// Byte size of offsets (BitFieldVec backing data)
+    /// Byte size of the super-k-mer offsets (BitFieldVec backing data)
     pub fn offsets_bytes(&self) -> usize {
-        std::mem::size_of_val(self.offsets.as_slice())
+        match &self.layout {
+            Layout::Flat { offsets, .. } => std::mem::size_of_val(offsets.as_slice()),
+            Layout::Inline(a) => {
+                std::mem::size_of_val(a.first.as_slice()) + std::mem::size_of_val(a.rest.as_slice())
+            }
+        }
     }
 
     /// Byte size of skew index data (positions only, excluding MPHFs)
@@ -379,13 +703,18 @@ impl SparseAndSkewIndex {
 
     /// Number of buckets stored
     pub fn num_buckets(&self) -> usize {
-        // EF has num_buckets + 1 entries
-        self.num_super_kmers_before_bucket.len().saturating_sub(1)
+        match &self.layout {
+            Layout::Flat { extras, .. } => extras.len().saturating_sub(1),
+            Layout::Inline(a) => a.first.len(),
+        }
     }
 
     /// Total number of super-kmers (offsets entries)
     pub fn num_offsets(&self) -> usize {
-        self.offsets.len()
+        match &self.layout {
+            Layout::Flat { offsets, .. } => offsets.len(),
+            Layout::Inline(a) => a.first.len() + a.rest.len(),
+        }
     }
 }
 
@@ -395,16 +724,25 @@ impl SparseAndSkewIndex {
         &self,
         writer: &mut W,
     ) -> std::io::Result<()> {
+        use crate::darray::{write_u64, write_vec_u64};
         use epserde::ser::Serialize;
 
-        // Serialize EF sequence
-        self.num_super_kmers_before_bucket.write_to(writer)?;
-
-        // Serialize offsets
-        // SAFETY: BitFieldVec serialization preserves data layout
-        unsafe { self.offsets
-            .serialize(writer)
-            .map_err(std::io::Error::other)? };
+        // SAFETY (each `serialize`): BitFieldVec serialization preserves data layout
+        match &self.layout {
+            Layout::Flat { extras, offsets } => {
+                write_u64(writer, LAYOUT_FLAT)?;
+                extras.write_to(writer)?;
+                unsafe { offsets.serialize(writer).map_err(std::io::Error::other)? };
+            }
+            Layout::Inline(a) => {
+                write_u64(writer, LAYOUT_INLINE)?;
+                unsafe { a.first.serialize(writer).map_err(std::io::Error::other)? };
+                write_vec_u64(writer, &a.multi)?;
+                write_vec_u64(writer, &a.heavy)?;
+                a.rest_bounds.write_to(writer)?;
+                unsafe { a.rest.serialize(writer).map_err(std::io::Error::other)? };
+            }
+        }
 
         // Serialize skew index (excluding MPHF)
         self.skew_index.serialize_without_mphf(writer)?;
@@ -412,28 +750,50 @@ impl SparseAndSkewIndex {
         Ok(())
     }
 
-    /// Deserialize without MPHF (MPHFs loaded separately from container)
+    /// Deserialize without MPHF (MPHFs loaded separately from container).
+    /// `format_major` is the index header's: 6 has no layout tag and is flat.
+    /// Either layout is kept as stored; see [`Self::upgrade_layout`].
     pub fn deserialize_without_mphf<R: std::io::Read>(
         reader: &mut R,
+        format_major: u32,
     ) -> std::io::Result<Self> {
+        use crate::darray::{read_u64, read_vec_u64};
         use epserde::deser::Deserialize;
 
-        // Deserialize EF sequence
-        let num_super_kmers_before_bucket = EliasFanoOffsets::read_from(reader)?;
-
-        // Deserialize offsets
-        // SAFETY: Reading data serialized by our own serialize method
-        let offsets = unsafe { BitFieldVec::deserialize_full(reader) }
-            .map_err(std::io::Error::other)?;
-
-        // Deserialize skew index (excluding MPHF)
+        let invalid = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("sparse index: {what}"));
+        let tag = if format_major == 6 { LAYOUT_FLAT } else { read_u64(reader)? };
+        // SAFETY (each `deserialize_full`): reading data serialized by our own serialize method
+        let layout = match tag {
+            LAYOUT_FLAT => {
+                let extras = EliasFanoOffsets::read_from(reader)?;
+                let offsets = unsafe { BitFieldVec::deserialize_full(reader) }.map_err(std::io::Error::other)?;
+                let n = extras.len().saturating_sub(1);
+                if extras.is_empty() || extras.access(n) as usize + n != offsets.len() {
+                    return Err(invalid("bucket bounds do not cover the offsets"));
+                }
+                Layout::Flat { extras, offsets }
+            }
+            LAYOUT_INLINE => {
+                let first = unsafe { BitFieldVec::deserialize_full(reader) }.map_err(std::io::Error::other)?;
+                let multi = read_vec_u64(reader)?;
+                let heavy = read_vec_u64(reader)?;
+                let rest_bounds = EliasFanoOffsets::read_from(reader)?;
+                let rest = unsafe { BitFieldVec::deserialize_full(reader) }.map_err(std::io::Error::other)?;
+                let n = first.len();
+                let num_multi: u64 = multi.iter().map(|w| w.count_ones() as u64).sum();
+                if multi.len() != n.div_ceil(64)
+                    || heavy.len() != n.div_ceil(64 * HEAVY_BLOCK)
+                    || rest_bounds.len() as u64 != num_multi + 1
+                    || rest_bounds.access(num_multi as usize) as usize != rest.len()
+                {
+                    return Err(invalid("inline directory does not match the offsets"));
+                }
+                Layout::Inline(InlineFirst { first, ranks: sample_ranks(&multi), multi, heavy, rest_bounds, rest })
+            }
+            _ => return Err(invalid("unknown bucket layout")),
+        };
         let skew_index = SkewIndex::deserialize_without_mphf(reader)?;
-
-        Ok(Self {
-            num_super_kmers_before_bucket,
-            offsets,
-            skew_index,
-        })
+        Ok(Self { layout, skew_index })
     }
 }
 
@@ -892,75 +1252,63 @@ mod tests {
         assert_eq!(index.num_offsets(), 0);
     }
 
+    /// Every bucket's offsets, through the public API.
+    fn contents(index: &SparseAndSkewIndex) -> Vec<Vec<u64>> {
+        (0..index.num_buckets())
+            .map(|b| {
+                let span = index.bucket(b);
+                (0..span.len()).map(|i| index.bucket_offset(span, i)).collect()
+            })
+            .collect()
+    }
+
+    /// The same contents in both layouts, and through a 7.0 round trip.
+    fn check_layouts(mut index: SparseAndSkewIndex, expected: &[Vec<u64>]) {
+        index.force_inline();
+        assert!(index.is_inline());
+        assert_eq!(contents(&index), expected);
+        let mut bytes = Vec::new();
+        index.serialize_without_mphf(&mut bytes).unwrap();
+        let back = SparseAndSkewIndex::deserialize_without_mphf(&mut bytes.as_slice(), 7).unwrap();
+        assert!(back.is_inline());
+        assert_eq!(contents(&back), expected);
+        index.downgrade_layout();
+        assert!(!index.is_inline());
+        assert_eq!(contents(&index), expected);
+        assert_eq!(index.num_offsets(), expected.iter().map(Vec::len).sum::<usize>());
+    }
+
+    fn tiny_spss() -> crate::spectrum_preserving_string_set::SpectrumPreservingStringSet {
+        let mut encoder = crate::builder::encode::Encoder::<31>::new();
+        encoder.add_sequence(b"ACGTACGTACGTACGTACGTACGTACGTACG").unwrap();
+        encoder.build(13)
+    }
+
     #[test]
     fn test_sparse_index_build_singleton() {
-        use crate::builder::encode::Encoder;
-
-        // Create SPSS for k=31
-        let mut encoder = Encoder::<31>::new();
-        encoder.add_sequence(b"ACGTACGTACGTACGTACGTACGTACGTACG").unwrap();
-        let spss = encoder.build(13);
-
-        // Create a single singleton bucket
-        let bucket = Bucket::new(100, vec![MinimizerTuple::new(100, 50, 0)]);
-        let buckets = vec![bucket];
-
-        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
-
-        // Should have 1 bucket
+        let buckets = vec![Bucket::new(100, vec![MinimizerTuple::new(100, 50, 0)])];
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &tiny_spss());
         assert_eq!(index.num_buckets(), 1);
-
-        // locate_bucket should give (0, 1) for singleton
-        let (begin, end) = index.locate_bucket(0);
-        assert_eq!((begin, end), (0, 1));
-
-        // offsets[0] should be 50 (the pos_in_seq)
-        assert_eq!(index.offsets.index_value(0), 50);
+        assert_eq!(contents(&index), [vec![50]]);
+        check_layouts(index, &[vec![50]]);
     }
 
     #[test]
     fn test_sparse_index_build_light() {
-        use crate::builder::encode::Encoder;
-
-        // Create SPSS
-        let mut encoder = Encoder::<31>::new();
-        encoder.add_sequence(b"ACGTACGTACGTACGTACGTACGTACGTACG").unwrap();
-        let spss = encoder.build(13);
-
-        // Create a light bucket (size = 3)
         let bucket = Bucket::new(200, vec![
             MinimizerTuple::new(200, 100, 0),
             MinimizerTuple::new(200, 101, 0),
             MinimizerTuple::new(200, 102, 0),
         ]);
-        let buckets = vec![bucket];
-
-        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
-
-        // Should have 1 bucket with 3 offsets
+        let index = SparseAndSkewIndex::build::<31>(&[bucket], None, 32, &tiny_spss());
         assert_eq!(index.num_buckets(), 1);
         assert_eq!(index.num_offsets(), 3);
-
-        // locate_bucket should give (0, 3) for size-3 bucket
-        let (begin, end) = index.locate_bucket(0);
-        assert_eq!((begin, end), (0, 3));
-
-        // Check positions
-        assert_eq!(index.offsets.index_value(0), 100);
-        assert_eq!(index.offsets.index_value(1), 101);
-        assert_eq!(index.offsets.index_value(2), 102);
+        assert_eq!(contents(&index), [vec![100, 101, 102]]);
+        check_layouts(index, &[vec![100, 101, 102]]);
     }
 
     #[test]
     fn test_sparse_index_build_mixed() {
-        use crate::builder::encode::Encoder;
-
-        // Create SPSS
-        let mut encoder = Encoder::<31>::new();
-        encoder.add_sequence(b"ACGTACGTACGTACGTACGTACGTACGTACG").unwrap();
-        let spss = encoder.build(13);
-
-        // Create mixed buckets
         let buckets = vec![
             Bucket::new(100, vec![MinimizerTuple::new(100, 50, 0)]), // Singleton
             Bucket::new(200, vec![
@@ -969,26 +1317,137 @@ mod tests {
             ]), // Light (size=2)
             Bucket::new(300, vec![MinimizerTuple::new(300, 200, 0)]), // Singleton
         ];
-
-        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &spss);
-
+        let index = SparseAndSkewIndex::build::<31>(&buckets, None, 32, &tiny_spss());
+        let expected = [vec![50], vec![100, 101], vec![200]];
         assert_eq!(index.num_buckets(), 3);
-        assert_eq!(index.num_offsets(), 4); // 1 + 2 + 1
+        assert_eq!(contents(&index), expected);
+        check_layouts(index, &expected);
+    }
 
-        // Bucket 0: singleton at offset 50
-        let (b0, e0) = index.locate_bucket(0);
-        assert_eq!((b0, e0), (0, 1));
-        assert_eq!(index.offsets.index_value(0), 50);
+    /// Mostly singletons pick the inline layout; all-double buckets, where
+    /// the bitmap and the second Elias-Fano cost more than they save, fall
+    /// back to flat.
+    #[test]
+    fn test_layout_follows_storage_cost() {
+        let spss = tiny_spss();
+        let make = |sizes: &[usize]| -> Vec<Bucket> {
+            let mut pos = 0u64;
+            sizes
+                .iter()
+                .enumerate()
+                .map(|(b, &size)| {
+                    let tuples = (0..size)
+                        .map(|_| {
+                            pos += 3;
+                            MinimizerTuple::new(b as u64, pos, 0)
+                        })
+                        .collect();
+                    Bucket::new(b as u64, tuples)
+                })
+                .collect()
+        };
+        let mostly_single: Vec<usize> = (0..20_000).map(|i| if i % 20 == 0 { 3 } else { 1 }).collect();
+        let index = SparseAndSkewIndex::build::<31>(&make(&mostly_single), None, 20, &spss);
+        assert!(index.is_inline());
+        let all_double = vec![2usize; 20_000];
+        let index = SparseAndSkewIndex::build::<31>(&make(&all_double), None, 20, &spss);
+        assert!(!index.is_inline());
+        let expected = contents(&index);
+        check_layouts(index, &expected);
+    }
 
-        // Bucket 1: light with 2 offsets
-        let (b1, e1) = index.locate_bucket(1);
-        assert_eq!((b1, e1), (1, 3));
-        assert_eq!(index.offsets.index_value(1), 100);
-        assert_eq!(index.offsets.index_value(2), 101);
+    /// The probe decodes a multi-position bucket's bounds at once only in a
+    /// heavy-flagged block, including the light buckets that share it; ranks
+    /// stay right across sample boundaries.
+    #[test]
+    fn test_inline_probe_and_heavy_blocks() {
+        let n = 3 * 512 + 7;
+        // Bucket 5 is heavy (block 0); bucket 9 is light in that block;
+        // bucket 600 is light in a block without heavy buckets.
+        let size = |i: usize| match i {
+            5 => MIN_BUCKET_SIZE + 6,
+            9 | 600 => 3,
+            i if i % 37 == 0 => 2,
+            _ => 1,
+        };
+        let mut a = InlineFirst::directory(n, (0..n).map(size));
+        let total: usize = (0..n).map(size).sum();
+        a.first = BitFieldVec::new(24, n);
+        a.rest = BitFieldVec::new(24, total - n);
+        let mut dst = 0;
+        for i in 0..n {
+            a.first.set_value(i, 1000 * i);
+            for j in 1..size(i) {
+                a.rest.set_value(dst, 1000 * i + j);
+                dst += 1;
+            }
+        }
+        let index = SparseAndSkewIndex { layout: Layout::Inline(a), skew_index: SkewIndex::new() };
+        assert!(matches!(index.probe(5), Probe::Span(BucketSpan::Inline(5000, _, _))));
+        assert!(matches!(index.probe(9), Probe::Span(BucketSpan::Inline(9000, _, _))));
+        assert_eq!(index.probe(600), Probe::First(600_000, 600));
+        assert_eq!(index.probe(1), Probe::Span(BucketSpan::Single(1000)));
+        for i in 0..n {
+            let span = index.bucket(i);
+            assert_eq!(span.len(), size(i));
+            for j in 0..size(i) {
+                assert_eq!(index.bucket_offset(span, j), (1000 * i + j) as u64);
+            }
+        }
+    }
 
-        // Bucket 2: singleton at offset 200
-        let (b2, e2) = index.locate_bucket(2);
-        assert_eq!((b2, e2), (3, 4));
-        assert_eq!(index.offsets.index_value(3), 200);
+    /// A format 6.0 index (flat layout) loads as stored, without conversion;
+    /// `upgrade_layout` converts it explicitly when inline is smaller.
+    #[test]
+    fn test_reads_format_6_flat_layout() {
+        use epserde::ser::Serialize;
+        let sizes: Vec<usize> = (0..5000).map(|b| [1, 2, 1, 3, 1, 1, 1, 1, 1, 1][b % 10]).collect();
+        let mut extras = vec![0u64];
+        let mut offsets_vec = Vec::new();
+        let mut expected = Vec::new();
+        for (b, &size) in sizes.iter().enumerate() {
+            extras.push(extras.last().unwrap() + size as u64 - 1);
+            let bucket: Vec<u64> = (0..size).map(|i| (100 * b + 7 * i) as u64).collect();
+            offsets_vec.extend(bucket.iter().copied());
+            expected.push(bucket);
+        }
+        let mut offsets = BitFieldVec::new(20, offsets_vec.len());
+        for (i, &v) in offsets_vec.iter().enumerate() {
+            offsets.set_value(i, v as usize);
+        }
+        let mut bytes = Vec::new();
+        EliasFanoOffsets::from_vec(&extras).write_to(&mut bytes).unwrap();
+        unsafe { offsets.serialize(&mut bytes).unwrap() };
+        SkewIndex::new().serialize_without_mphf(&mut bytes).unwrap();
+
+        let mut index = SparseAndSkewIndex::deserialize_without_mphf(&mut bytes.as_slice(), 6).unwrap();
+        assert!(!index.is_inline());
+        assert_eq!(index.num_buckets(), sizes.len());
+        assert_eq!(index.num_offsets(), offsets_vec.len());
+        assert_eq!(contents(&index), expected);
+
+        // A 7.0 round trip keeps it flat ...
+        let mut bytes7 = Vec::new();
+        index.serialize_without_mphf(&mut bytes7).unwrap();
+        let back = SparseAndSkewIndex::deserialize_without_mphf(&mut bytes7.as_slice(), 7).unwrap();
+        assert!(!back.is_inline());
+        assert_eq!(contents(&back), expected);
+
+        // ... until an explicit upgrade, which is then stored.
+        let flat_bytes = index.ef_bytes() + index.offsets_bytes();
+        assert!(index.upgrade_layout());
+        assert!(index.is_inline());
+        assert!(index.ef_bytes() + index.offsets_bytes() < flat_bytes);
+        assert!(!index.upgrade_layout());
+        assert_eq!(contents(&index), expected);
+        let mut bytes7 = Vec::new();
+        index.serialize_without_mphf(&mut bytes7).unwrap();
+        let back = SparseAndSkewIndex::deserialize_without_mphf(&mut bytes7.as_slice(), 7).unwrap();
+        assert!(back.is_inline());
+        assert_eq!(contents(&back), expected);
+
+        // A corrupted layout tag is refused.
+        bytes7[0] = 9;
+        assert!(SparseAndSkewIndex::deserialize_without_mphf(&mut bytes7.as_slice(), 7).is_err());
     }
 }

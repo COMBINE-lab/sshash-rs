@@ -79,10 +79,7 @@ fn check_build(force_external_sort: bool) {
 
     let index = dict.index_ref();
     let sizes: Vec<_> = (0..index.num_buckets())
-        .map(|id| {
-            let (begin, end) = index.locate_bucket(id);
-            end - begin
-        })
+        .map(|id| index.bucket(id).len())
         .collect();
     assert!(sizes.iter().any(|size| (65..=128).contains(size)));
     assert!(sizes.iter().any(|&size| size > 256));

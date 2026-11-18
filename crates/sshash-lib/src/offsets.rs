@@ -328,6 +328,21 @@ impl EliasFanoOffsets {
         (high << self.low_bit_width) | low
     }
 
+    /// All values in order, decoded with one forward bit scan (no select).
+    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        let mut word_idx = 0usize;
+        let mut word = self.high_bits.first().copied().unwrap_or(0);
+        (0..self.num_values).map(move |i| {
+            while word == 0 {
+                word_idx += 1;
+                word = self.high_bits[word_idx];
+            }
+            let p = ((word_idx as u64) << 6) | word.trailing_zeros() as u64;
+            word &= word - 1;
+            ((p - i as u64) << self.low_bit_width) | self.get_low_bits(i)
+        })
+    }
+
     /// Get the offsets at indices `i` and `i + 1` (requires `i + 1 < len`).
     ///
     /// One select instead of two: element `i + 1`'s high part sits at the
@@ -658,6 +673,7 @@ mod ef_tests {
         for (i, &v) in offsets.iter().enumerate() {
             assert_eq!(ef.access(i), v, "access({i}) mismatch");
         }
+        assert_eq!(ef.iter().collect::<Vec<_>>(), offsets, "iter mismatch");
 
         // Reference locate_with_end via brute force
         let universe = *offsets.last().unwrap();

@@ -9,11 +9,10 @@ use crate::{
     kmer::{Kmer, KmerBits},
     minimizer::MinimizerInfo,
     minimizers_control_map::MinimizersControlMap,
-    sparse_and_skew_index::SparseAndSkewIndex,
+    sparse_and_skew_index::{BucketSpan, Probe, SparseAndSkewIndex},
     spectrum_preserving_string_set::SpectrumPreservingStringSet,
     constants::{ceil_log2, INVALID_UINT64, MIN_L},
 };
-use value_traits::slices::SliceByValue;
 use tracing::info;
 
 /// The main dictionary structure
@@ -219,8 +218,7 @@ impl Dictionary {
         if bucket_id >= self.index.num_buckets() {
             return None;
         }
-        let (begin, end) = self.index.locate_bucket(bucket_id);
-        Some((minimizer_info.value, bucket_id as u64, (end - begin) as u64))
+        Some((minimizer_info.value, bucket_id as u64, self.index.bucket(bucket_id).len() as u64))
     }
 
     /// Look up a k-mer and return position + orientation
@@ -282,7 +280,7 @@ impl Dictionary {
     where
         Kmer<K>: KmerBits,
     {
-        let bounds = match cache.as_deref_mut() {
+        let probe = match cache.as_deref_mut() {
             Some(c) => {
                 c.size = 0;
                 self.resolve_bucket(mini.value, c)
@@ -291,18 +289,33 @@ impl Dictionary {
                 .control_map
                 .lookup(mini.value)
                 .filter(|&id| id < self.index.num_buckets())
-                .map(|id| self.index.locate_bucket(id)),
+                .map(|id| self.index.probe(id)),
         };
-        let Some((begin, end)) = bounds else {
-            let mut res = crate::streaming_query::LookupResult::not_found();
-            res.minimizer_found = false;
-            return res;
+        let span = match probe {
+            None => return absent_minimizer(),
+            Some(Probe::Span(span)) => span,
+            Some(Probe::First(first, id)) => {
+                // Light multi-position bucket: its first position decides
+                // presence and is tried before the rest is decoded.
+                if !self.mmer_matches(first, mini.value) {
+                    return absent_minimizer();
+                }
+                if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, first, mini.pos_in_kmer) {
+                    // No positions are cached (`size` stays 0): one matched
+                    // position of a multi-position bucket must never pass
+                    // for a singleton in the streaming shortcut.
+                    return hit.into_lookup_result(self.k);
+                }
+                let span = self.index.rest_span(id, first);
+                if let Some(c) = cache.as_deref_mut() {
+                    c.bounds = Some(Probe::Span(span));
+                }
+                return self.lookup_light(kmer, kmer_rc, mini, span, first, 1, cache);
+            }
         };
-        let n = end - begin;
+        let n = span.len();
         if n == 0 {
-            let mut res = crate::streaming_query::LookupResult::not_found();
-            res.minimizer_found = false;
-            return res;
+            return absent_minimizer();
         }
 
         let log2_size = ceil_log2(n as u64);
@@ -313,7 +326,7 @@ impl Dictionary {
             if within_pos == INVALID_UINT64 || within_pos as usize >= n {
                 return crate::streaming_query::LookupResult::not_found();
             }
-            let minimizer_pos = self.index.offsets.index_value(begin + within_pos as usize) as u64;
+            let minimizer_pos = self.index.bucket_offset(span, within_pos as usize);
             if !self.mmer_matches(minimizer_pos, mini.value) {
                 // A foreign k-mer probes an arbitrary in-bucket position, so a
                 // mismatch here says nothing about the minimizer's presence.
@@ -328,41 +341,59 @@ impl Dictionary {
             // same minimizer, so one presence probe decides for the whole set:
             // a mismatch means an out-of-set minimizer collided into this
             // bucket through the MPHF.
-            let first_pos = self.index.offsets.index_value(begin) as u64;
-            if !self.mmer_matches(first_pos, mini.value) {
-                if let Some(c) = cache {
-                    c.size = 0;
-                }
-                let mut res = crate::streaming_query::LookupResult::not_found();
-                res.minimizer_found = false;
-                return res;
+            let first = self.index.bucket_offset(span, 0);
+            if !self.mmer_matches(first, mini.value) {
+                return absent_minimizer();
             }
-            if let Some(c) = cache
-                && n <= BucketCache::MAX_CACHED_POSITIONS
-            {
-                // Decode into the cache (no extra cost — the verification
-                // consumes the same values) so a streaming follow-up with
-                // this minimizer skips the MPHF/EF/offset work entirely.
-                c.positions[0] = first_pos;
-                for (i, position) in c.positions.iter_mut().enumerate().take(n).skip(1) {
-                    *position = self.index.offsets.index_value(begin + i) as u64;
-                }
-                c.size = n;
-                let positions = c.positions;
-                return self.lookup_at_positions(&positions[..n], kmer, kmer_rc, mini);
+            self.lookup_light(kmer, kmer_rc, mini, span, first, 0, cache)
+        }
+    }
+
+    /// Verify positions `skip..` of a light bucket whose minimizer was found
+    /// at its first position, `first`. With a cache, a locate set of at most
+    /// [`BucketCache::MAX_CACHED_POSITIONS`] entries is decoded into it, so a
+    /// streaming follow-up with this minimizer skips the MPHF and the
+    /// directory entirely.
+    #[inline]
+    #[allow(clippy::too_many_arguments)] // hot path: no argument struct
+    fn lookup_light<const K: usize>(
+        &self,
+        kmer: &Kmer<K>,
+        kmer_rc: &Kmer<K>,
+        mini: MinimizerInfo,
+        span: BucketSpan,
+        first: u64,
+        skip: usize,
+        cache: Option<&mut BucketCache>,
+    ) -> crate::streaming_query::LookupResult
+    where
+        Kmer<K>: KmerBits,
+    {
+        let n = span.len();
+        if let Some(c) = cache
+            && n <= BucketCache::MAX_CACHED_POSITIONS
+        {
+            c.positions[0] = first;
+            for (i, slot) in c.positions[..n].iter_mut().enumerate().skip(1) {
+                *slot = self.index.bucket_offset(span, i);
             }
-            // No caching: verify straight off the offsets array, no buffering.
-            if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, first_pos, mini.pos_in_kmer) {
+            c.size = n;
+            let positions = c.positions;
+            return self.lookup_at_positions(&positions[skip..n], kmer, kmer_rc, mini);
+        }
+        // No caching: verify straight off the offsets, no buffering.
+        if skip == 0
+            && let Some(hit) = self.lookup_at_position(kmer, kmer_rc, first, mini.pos_in_kmer)
+        {
+            return hit.into_lookup_result(self.k);
+        }
+        for i in 1..n {
+            let minimizer_pos = self.index.bucket_offset(span, i);
+            if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, minimizer_pos, mini.pos_in_kmer) {
                 return hit.into_lookup_result(self.k);
             }
-            for i in (begin + 1)..end {
-                let minimizer_pos = self.index.offsets.index_value(i) as u64;
-                if let Some(hit) = self.lookup_at_position(kmer, kmer_rc, minimizer_pos, mini.pos_in_kmer) {
-                    return hit.into_lookup_result(self.k);
-                }
-            }
-            crate::streaming_query::LookupResult::not_found()
         }
+        crate::streaming_query::LookupResult::not_found()
     }
 
     /// The verification half of [`Self::lookup_with_minimizer`]: try the
@@ -589,6 +620,14 @@ impl Dictionary {
         info!("  total: {:.5} [bits/kmer]", total * 8.0 / num_kmers);
     }
 
+    /// Convert the buckets to the inline-first layout when that is smaller
+    /// (see [`SparseAndSkewIndex::upgrade_layout`]). A loaded format 6.0
+    /// index stays flat until this is called; save afterwards to keep the
+    /// result. Returns whether the layout changed.
+    pub fn upgrade_layout(&mut self) -> bool {
+        self.index.upgrade_layout()
+    }
+
     /// Serialize the dictionary to files
     pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> crate::serialization::SerializationResult<()> {
         use crate::serialization::*;
@@ -657,7 +696,8 @@ impl Dictionary {
         let mut control_map = MinimizersControlMap::deserialize_without_mphf(&mut index_reader)?;
 
         // Read index metadata without MPHF
-        let mut index = SparseAndSkewIndex::deserialize_without_mphf(&mut index_reader)?;
+        let mut index =
+            SparseAndSkewIndex::deserialize_without_mphf(&mut index_reader, header.version_major)?;
 
         // Load MPHF container
         let mphf_path = mphf_container_path(base_path);
@@ -704,7 +744,7 @@ impl Dictionary {
     /// `None` means the minimizer is not in the index at all (the caller must
     /// report `minimizer_found = false`); `Some((begin, end))` are the bounds.
     #[inline(always)]
-    fn resolve_bucket(&self, mini_value: u64, cache: &mut BucketCache) -> Option<(usize, usize)> {
+    fn resolve_bucket(&self, mini_value: u64, cache: &mut BucketCache) -> Option<Probe> {
         if cache.valid && cache.mini_value == mini_value {
             return cache.bounds;
         }
@@ -712,7 +752,7 @@ impl Dictionary {
             .control_map
             .lookup(mini_value)
             .filter(|&id| id < self.index.num_buckets())
-            .map(|id| self.index.locate_bucket(id));
+            .map(|id| self.index.probe(id));
         cache.valid = true;
         cache.mini_value = mini_value;
         cache.bounds = bounds;
@@ -720,6 +760,13 @@ impl Dictionary {
     }
 
 
+}
+
+/// A miss that proves the minimizer absent from the index.
+fn absent_minimizer() -> crate::streaming_query::LookupResult {
+    let mut res = crate::streaming_query::LookupResult::not_found();
+    res.minimizer_found = false;
+    res
 }
 
 /// Memoized bucket-bounds resolution for a streaming query.
@@ -744,7 +791,7 @@ pub(crate) struct BucketCache {
     mini_value: u64,
     /// `None` records a minimizer that is absent from the index -- worth
     /// caching too, since that is the other repeated outcome.
-    bounds: Option<(usize, usize)>,
+    bounds: Option<Probe>,
     /// Number of decoded positions held in `positions` (0 = nothing cached).
     /// Filled by `lookup_with_minimizer` for non-heavy buckets of at most
     /// `MAX_CACHED_POSITIONS` entries, at no extra decode cost; consumed by
@@ -824,8 +871,7 @@ mod tests {
             eprintln!("Control map lookup: bucket_id={}", bucket_id);
 
             if bucket_id < dict.index.num_buckets() {
-                let (begin, end) = dict.index.locate_bucket(bucket_id);
-                eprintln!("Bucket range: [{}, {}), size={}", begin, end, end - begin);
+                eprintln!("Bucket: {:?}", dict.index.bucket(bucket_id));
             }
         } else {
             eprintln!("Minimizer NOT found in control map!");
@@ -878,5 +924,149 @@ mod tests {
         let absent = Kmer::<7>::from_str("AAAAAAA").unwrap();
         assert!(!dict.query::<7>(&absent).is_found());
         assert!(!dict.query::<7>(&absent.reverse_complement()).is_found());
+    }
+
+    fn lcg_bases(state: &mut u64, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                b"ACGT"[((*state >> 33) & 3) as usize]
+            })
+            .collect()
+    }
+
+    fn revcomp(seq: &[u8]) -> Vec<u8> {
+        seq.iter()
+            .rev()
+            .map(|b| match b {
+                b'A' => b'T',
+                b'C' => b'G',
+                b'G' => b'C',
+                _ => b'A',
+            })
+            .collect()
+    }
+
+    fn build_dict(seqs: &[Vec<u8>], m: usize) -> Dictionary {
+        let mut cfg = BuildConfiguration::new(31, m).unwrap();
+        cfg.num_threads = 1;
+        let seqs = seqs.iter().map(|s| String::from_utf8(s.clone()).unwrap()).collect();
+        DictionaryBuilder::new(cfg).unwrap().build_from_sequences(seqs).unwrap()
+    }
+
+    /// Point and streaming lookups agree between the inline and flat layouts,
+    /// on the source strings (all found) and on copies with every 17th base
+    /// changed, which break extensions and send seeds back into buckets they
+    /// just used. m=3 has heavy buckets (and light ones in heavy-flagged
+    /// blocks), m=9 many light multi-position buckets.
+    #[test]
+    fn test_inline_and_flat_layouts_agree() {
+        const K: usize = 31;
+        for (m, seed) in [(3usize, 813u64), (9, 5), (15, 11)] {
+            let mut state = seed;
+            let seqs: Vec<Vec<u8>> = (0..40).map(|_| lcg_bases(&mut state, 600)).collect();
+            let mut inline = build_dict(&seqs, m);
+            let mut flat = build_dict(&seqs, m);
+            inline.index.force_inline();
+            flat.index.downgrade_layout();
+            assert!(inline.index.is_inline() && !flat.index.is_inline());
+
+            let (mut si, mut sf) = (inline.create_streaming_query::<K>(), flat.create_streaming_query::<K>());
+            for s in &seqs {
+                let mut mutated = s.clone();
+                for i in (8..mutated.len()).step_by(17) {
+                    mutated[i] = match mutated[i] { b'A' => b'C', b'C' => b'G', b'G' => b'T', _ => b'A' };
+                }
+                for (read, source) in [(s.clone(), true), (revcomp(s), true), (revcomp(&mutated), false), (mutated, false)] {
+                    si.reset();
+                    sf.reset();
+                    for w in read.windows(K) {
+                        let kmer = Kmer::<K>::from_ascii_unchecked(w);
+                        let point = flat.query(&kmer);
+                        assert!(!source || point.is_found(), "m={m}: source k-mer not found");
+                        assert_eq!(inline.query(&kmer), point, "m={m}");
+                        assert_eq!(si.lookup(w), point, "m={m}");
+                        assert_eq!(sf.lookup(w), point, "m={m}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Streaming over a light multi-position inline bucket: a hit at its first
+    /// position is partial state. The next k-mer shares the minimizer
+    /// occurrence, fails to extend, and sits at the bucket's other position:
+    /// it must be found (no singleton shortcut), which decodes the rest into
+    /// the cache; the k-mer after it reuses that complete cache. A minimizer
+    /// change and a reset give the same answers.
+    #[test]
+    fn test_streaming_partial_multi_bucket_state() {
+        const K: usize = 31;
+        let mut state = 99u64;
+        for _ in 0..2000 {
+            // Two strings sharing their middle (k-1)-mer `mid`, so its
+            // minimizer has one position in each: a + mid + c1, b + mid + c2.
+            let mid = lcg_bases(&mut state, K - 1);
+            let f = lcg_bases(&mut state, 5);
+            if f[0] == f[1] || f[2] == f[3] {
+                continue;
+            }
+            let cat = |x: u8, y: u8| [&[x][..], &mid, &[y]].concat();
+            let seqs = [cat(f[0], f[2]), cat(f[1], f[3])];
+            let mut dict = build_dict(&seqs, 13);
+            dict.index.force_inline();
+            let mini = |w: &[u8]| dict.debug_extract_minimizer(&Kmer::<K>::from_ascii_unchecked(w));
+            let m1 = mini(&seqs[0][..K]);
+            let same_occurrence = |w: &[u8], shift: usize| {
+                let x = mini(w);
+                x.value == m1.value && x.pos_in_kmer + shift == m1.pos_in_kmer
+            };
+            if m1.pos_in_kmer < 2 || !seqs.iter().all(|q| same_occurrence(&q[..K], 0) && same_occurrence(&q[1..], 1)) {
+                continue;
+            }
+            let id = dict.control_map.lookup(m1.value).unwrap();
+            let span = dict.index.bucket(id);
+            assert_eq!(span.len(), 2);
+            assert!(matches!(dict.index.probe(id), Probe::First(..)));
+
+            // `p` holds the bucket's first position; the read is p's first
+            // k-mer, then q's last one, then an absent k-mer.
+            let first = dict.index.bucket_offset(span, 0);
+            let r0 = dict.query(&Kmer::<K>::from_ascii_unchecked(&seqs[0][..K]));
+            let (p, q) = if (r0.string_begin..r0.string_end).contains(&first) {
+                (&seqs[0], &seqs[1])
+            } else {
+                (&seqs[1], &seqs[0])
+            };
+            let Some(read) = b"ACGT".iter().map(|&x| [&p[..K], &[q[K], x][..]].concat()).find(|read| {
+                same_occurrence(&read[2..], 2) && !dict.query(&Kmer::<K>::from_ascii_unchecked(&read[2..])).is_found()
+            }) else {
+                continue;
+            };
+
+            let mut stream = dict.create_streaming_query::<K>();
+            let results: Vec<_> = read.windows(K).map(|w| stream.lookup(w)).collect();
+            let point = |w: &[u8]| dict.query(&Kmer::<K>::from_ascii_unchecked(w));
+            assert!(results[0].is_found());
+            assert!(results[1].is_found(), "a partial first hit was taken for a singleton");
+            assert_eq!(results[1], point(&q[1..]));
+            assert!(!results[2].is_found());
+            assert_eq!(stream.num_skipped_singleton_lookups(), 0);
+            assert_eq!(stream.num_bucket_cache_hits(), 1, "the decoded bucket is reused");
+
+            // Other minimizers first, then the same read: same answers.
+            stream.reset();
+            let prefixed = [&lcg_bases(&mut state, 12)[..], &read].concat();
+            let again: Vec<_> = prefixed.windows(K).map(|w| stream.lookup(w)).collect();
+            for (w, r) in prefixed.windows(K).zip(&again) {
+                assert_eq!(*r, point(w));
+            }
+            assert_eq!(&again[12..], &results[..]);
+            stream.reset();
+            let again: Vec<_> = read.windows(K).map(|w| stream.lookup(w)).collect();
+            assert_eq!(again, results);
+            return;
+        }
+        panic!("no input met the conditions");
     }
 }
