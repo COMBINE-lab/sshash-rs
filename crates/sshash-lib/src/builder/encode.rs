@@ -128,6 +128,14 @@ where
     }
 }
 
+/// Indices in `0..n` of the sequences at least `k` long, in order.
+///
+/// Indices are `usize` so that inputs of 2^32 or more sequences are not
+/// truncated; `len_of(i)` returns the length of sequence `i`.
+fn kept_indices(n: usize, k: usize, len_of: impl Fn(usize) -> usize) -> Vec<usize> {
+    (0..n).filter(|&i| len_of(i) >= k).collect()
+}
+
 /// Encode `sequences` into an SPSS in parallel: the same SPSS as adding each
 /// sequence, in order, to an [`Encoder`] (sequences shorter than `K` are
 /// skipped), built from an exactly sized buffer.
@@ -149,9 +157,7 @@ where
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
 
-    let kept: Vec<usize> = (0..sequences.len())
-        .filter(|&i| sequences[i].len() >= K)
-        .collect();
+    let kept = kept_indices(sequences.len(), K, |i| sequences[i].len());
     let mut offsets = OffsetsVector::new();
     let mut total_bases = 0u64;
     for &i in &kept {
@@ -211,6 +217,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    #[cfg_attr(debug_assertions, ignore = "scans 2^32 indices; runs in the release test pass")]
+    fn test_kept_indices_past_u32() {
+        // Only sequences at or past index 2^32 are long enough: a u32 index
+        // would wrap and either drop them or keep the wrong ones
+        let n = (1usize << 32) + 3;
+        let kept = kept_indices(n, 31, |i| if i >= 1 << 32 { 31 } else { 0 });
+        assert_eq!(kept, vec![1 << 32, (1 << 32) + 1, (1 << 32) + 2]);
+    }
 
     #[test]
     fn test_parallel_encoding_matches_encoder() {
