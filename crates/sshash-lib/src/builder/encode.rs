@@ -149,13 +149,13 @@ where
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
 
-    let kept: Vec<u32> = (0..sequences.len() as u32)
-        .filter(|&i| sequences[i as usize].len() >= K)
+    let kept: Vec<usize> = (0..sequences.len())
+        .filter(|&i| sequences[i].len() >= K)
         .collect();
     let mut offsets = OffsetsVector::new();
     let mut total_bases = 0u64;
     for &i in &kept {
-        total_bases += sequences[i as usize].len() as u64;
+        total_bases += sequences[i].len() as u64;
         offsets.push(total_bases);
     }
     let bytes: Vec<AtomicU8> = (0..total_bases.div_ceil(4))
@@ -164,7 +164,7 @@ where
         .collect();
 
     let error = (0..kept.len()).into_par_iter().with_min_len(256).map(|j| {
-        let idx = kept[j] as usize;
+        let idx = kept[j];
         let seq = sequences[idx].as_bytes();
         let start = offsets.access(j);
         let end = start + seq.len() as u64;
